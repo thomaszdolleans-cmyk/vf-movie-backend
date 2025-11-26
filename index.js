@@ -7,9 +7,34 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ✅ VÉRIFICATION DES VARIABLES D'ENVIRONNEMENT AU DÉMARRAGE
+console.log('🔍 Vérification des variables d\'environnement...');
+const requiredEnvVars = ['TMDB_API_KEY', 'UNOGS_API_KEY', 'DATABASE_URL'];
+const missingVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingVars.length > 0) {
+  console.error('❌ Variables d\'environnement manquantes:', missingVars);
+  console.error('💡 Vérifiez votre configuration sur Render.com');
+  process.exit(1);
+}
+
+console.log('✅ TMDB_API_KEY:', process.env.TMDB_API_KEY ? `${process.env.TMDB_API_KEY.substring(0, 8)}...` : '✗ MANQUANTE');
+console.log('✅ UNOGS_API_KEY:', process.env.UNOGS_API_KEY ? `${process.env.UNOGS_API_KEY.substring(0, 8)}...` : '✗ MANQUANTE');
+console.log('✅ DATABASE_URL:', process.env.DATABASE_URL ? 'Configurée ✓' : '✗ MANQUANTE');
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+// Test de connexion à la base de données
+pool.connect((err, client, release) => {
+  if (err) {
+    console.error('❌ Erreur de connexion à la base de données:', err.message);
+  } else {
+    console.log('✅ Connexion à la base de données réussie');
+    release();
+  }
 });
 
 app.use(cors());
@@ -29,6 +54,20 @@ const unogsClient = axios.create({
   }
 });
 
+// 🆕 ROUTE DE DEBUG
+app.get('/api/debug', (req, res) => {
+  res.json({
+    status: 'API Active',
+    environment: {
+      NODE_ENV: process.env.NODE_ENV || 'development',
+      TMDB_API_KEY: process.env.TMDB_API_KEY ? '✓ Configurée' : '✗ Manquante',
+      UNOGS_API_KEY: process.env.UNOGS_API_KEY ? '✓ Configurée' : '✗ Manquante',
+      DATABASE_URL: process.env.DATABASE_URL ? '✓ Configurée' : '✗ Manquante'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.get('/api/search', async (req, res) => {
   try {
     const searchQuery = req.query.query;
@@ -37,9 +76,13 @@ app.get('/api/search', async (req, res) => {
       return res.status(400).json({ error: 'Query must be at least 2 characters' });
     }
 
+    console.log(`🔍 Recherche pour: "${searchQuery}"`);
+
     const tmdbResponse = await tmdbClient.get('/search/movie', {
       params: { query: searchQuery, language: 'fr-FR' }
     });
+
+    console.log(`✅ TMDB a trouvé ${tmdbResponse.data.results.length} résultats`);
 
     const movies = await Promise.all(
       tmdbResponse.data.results.slice(0, 10).map(async (movie) => {
@@ -61,8 +104,16 @@ app.get('/api/search', async (req, res) => {
 
     res.json({ results: movies });
   } catch (error) {
-    console.error('Search error:', error.message);
-    res.status(500).json({ error: 'Search failed', details: error.message });
+    console.error('❌ Search error:', error.message);
+    if (error.response) {
+      console.error('Response data:', error.response.data);
+      console.error('Response status:', error.response.status);
+    }
+    res.status(500).json({ 
+      error: 'Search failed', 
+      details: error.message,
+      hint: error.response?.status === 401 ? 'Vérifiez votre TMDB_API_KEY' : null
+    });
   }
 });
 
@@ -70,6 +121,8 @@ app.get('/api/movie/:tmdb_id/availability', async (req, res) => {
   try {
     const { tmdb_id } = req.params;
     const { audio_filter } = req.query;
+
+    console.log(`🎬 Recherche de disponibilité pour le film TMDB ID: ${tmdb_id}`);
 
     const movieDetails = await getOrCreateMovie(tmdb_id);
 
@@ -81,8 +134,10 @@ app.get('/api/movie/:tmdb_id/availability', async (req, res) => {
     let availabilities;
 
     if (cacheCheck.rows.length > 0) {
+      console.log(`✅ Utilisation du cache (${cacheCheck.rows.length} entrées)`);
       availabilities = cacheCheck.rows;
     } else {
+      console.log(`🔄 Récupération des données depuis uNoGS...`);
       availabilities = await fetchAndCacheAvailability(tmdb_id, movieDetails);
     }
 
@@ -110,8 +165,16 @@ app.get('/api/movie/:tmdb_id/availability', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Availability error:', error.message);
-    res.status(500).json({ error: 'Failed to get availability', details: error.message });
+    console.error('❌ Availability error:', error.message);
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', error.response.data);
+    }
+    res.status(500).json({ 
+      error: 'Failed to get availability', 
+      details: error.message,
+      hint: error.response?.status === 401 ? 'Vérifiez vos clés API' : null
+    });
   }
 });
 
@@ -196,7 +259,10 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
 
     return availabilities;
   } catch (error) {
-    console.error('uNoGS fetch error:', error.message);
+    console.error('❌ uNoGS fetch error:', error.message);
+    if (error.response) {
+      console.error('uNoGS Response status:', error.response.status);
+    }
     return [];
   }
 }
@@ -214,12 +280,22 @@ function getCountryName(code) {
 }
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    env: {
+      TMDB_API_KEY: process.env.TMDB_API_KEY ? '✓' : '✗',
+      UNOGS_API_KEY: process.env.UNOGS_API_KEY ? '✓' : '✗',
+      DATABASE_URL: process.env.DATABASE_URL ? '✓' : '✗'
+    }
+  });
 });
 
 app.listen(PORT, () => {
   console.log(`🚀 VF Movie Finder API running on port ${PORT}`);
   console.log(`📍 Endpoints:`);
+  console.log(`   - GET /health`);
+  console.log(`   - GET /api/debug`);
   console.log(`   - GET /api/search?query=inception`);
   console.log(`   - GET /api/movie/:tmdb_id/availability?audio_filter=vf`);
 });
