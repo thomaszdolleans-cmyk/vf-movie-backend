@@ -31,7 +31,7 @@ const unogsClient = axios.create({
 
 app.get('/api/search', async (req, res) => {
   try {
-    const { query } = req.query;
+    const query = req.query.query;
     
     if (!query || query.length < 2) {
       return res.status(400).json({ error: 'Query must be at least 2 characters' });
