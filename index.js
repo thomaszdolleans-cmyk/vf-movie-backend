@@ -14,6 +14,7 @@ const pool = new Pool({
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const tmdbClient = axios.create({
   baseURL: 'https://api.themoviedb.org/3',
