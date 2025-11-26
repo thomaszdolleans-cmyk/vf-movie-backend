@@ -31,14 +31,14 @@ const unogsClient = axios.create({
 
 app.get('/api/search', async (req, res) => {
   try {
-    const query = req.query.query;
+    const searchQuery = req.query.query;
     
-    if (!query || query.length < 2) {
+    if (!searchQuery || searchQuery.length < 2) {
       return res.status(400).json({ error: 'Query must be at least 2 characters' });
     }
 
     const tmdbResponse = await tmdbClient.get('/search/movie', {
-      params: { query, language: 'fr-FR' }
+      params: { query: searchQuery, language: 'fr-FR' }
     });
 
     const movies = await Promise.all(
@@ -219,6 +219,9 @@ app.get('/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 VF Movie Finder API running on port ${PORT}`);
+  console.log(`📍 Endpoints:`);
+  console.log(`   - GET /api/search?query=inception`);
+  console.log(`   - GET /api/movie/:tmdb_id/availability?audio_filter=vf`);
 });
 
 module.exports = app;
