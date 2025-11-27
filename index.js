@@ -182,40 +182,61 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
     const availabilities = [];
 
     if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
-      let bestMatch = searchResponse.data.results[0];
+      console.log(`uNoGS returned ${searchResponse.data.results.length} results`);
       
-      // Try to find exact title match
-      const exactMatch = searchResponse.data.results.find(result => 
-        result.title?.toLowerCase() === movieDetails.title.toLowerCase() ||
-        result.title?.toLowerCase() === movieDetails.original_title?.toLowerCase()
-      );
+      let bestMatch = null;
       
-      if (exactMatch) {
-        bestMatch = exactMatch;
+      // First: Try exact title match with valid year
+      if (movieDetails.release_year) {
+        bestMatch = searchResponse.data.results.find(result => {
+          const titleMatch = result.title?.toLowerCase() === movieDetails.title.toLowerCase() ||
+                            result.title?.toLowerCase() === movieDetails.original_title?.toLowerCase();
+          const resultYear = result.year || result.filmyear || 0;
+          const yearDiff = Math.abs(resultYear - movieDetails.release_year);
+          return titleMatch && yearDiff <= 1 && resultYear !== 0;
+        });
+        
+        if (bestMatch) {
+          console.log(`✅ Found exact title and year match: ${bestMatch.title} (${bestMatch.year})`);
+        }
       }
       
-      // Verify year matches (within 1 year tolerance for accuracy)
-      if (movieDetails.release_year && bestMatch.year) {
-        const yearDiff = Math.abs(bestMatch.year - movieDetails.release_year);
-        if (yearDiff > 1) {
-          console.log(`⚠️ Year mismatch! TMDB: ${movieDetails.release_year}, uNoGS: ${bestMatch.year}`);
-          console.log(`This might be a different movie with similar title`);
-          
-          // Try to find a better match with correct year
-          const yearMatch = searchResponse.data.results.find(result => {
-            const resultYear = result.year || result.filmyear;
-            return resultYear && Math.abs(resultYear - movieDetails.release_year) <= 1;
-          });
-          
-          if (yearMatch) {
-            console.log(`✅ Found better match with correct year: ${yearMatch.title} (${yearMatch.year})`);
-            bestMatch = yearMatch;
+      // Second: Try to find any result with matching year (within 1 year)
+      if (!bestMatch && movieDetails.release_year) {
+        bestMatch = searchResponse.data.results.find(result => {
+          const resultYear = result.year || result.filmyear || 0;
+          const yearDiff = Math.abs(resultYear - movieDetails.release_year);
+          return yearDiff <= 1 && resultYear !== 0;
+        });
+        
+        if (bestMatch) {
+          console.log(`✅ Found match by year: ${bestMatch.title} (${bestMatch.year})`);
+        }
+      }
+      
+      // Third: Fallback to first result but log warning
+      if (!bestMatch) {
+        bestMatch = searchResponse.data.results[0];
+        const resultYear = bestMatch.year || bestMatch.filmyear || 0;
+        console.log(`⚠️ Using first result (may not be accurate): ${bestMatch.title} (${resultYear})`);
+        
+        if (movieDetails.release_year && resultYear !== 0) {
+          const yearDiff = Math.abs(resultYear - movieDetails.release_year);
+          if (yearDiff > 1) {
+            console.log(`⚠️ Year mismatch! TMDB: ${movieDetails.release_year}, uNoGS: ${resultYear}`);
+            console.log(`⚠️ This is likely a different movie!`);
+            // Return empty results for wrong movie
+            return [];
           }
+        }
+        
+        if (resultYear === 0) {
+          console.log(`⚠️ uNoGS result has no year information - accuracy cannot be verified`);
         }
       }
 
       const netflixId = bestMatch.nfid || bestMatch.id;
-      console.log(`Found Netflix ID: ${netflixId} for title: ${bestMatch.title} (${bestMatch.year})`);
+      console.log(`Using Netflix ID: ${netflixId} for title: ${bestMatch.title} (${bestMatch.year || 'unknown year'})`);
 
       // Get countries and audio/subtitle details using titlecountries endpoint
       try {
