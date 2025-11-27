@@ -160,23 +160,29 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
   try {
     console.log(`Searching uNoGS for: ${movieDetails.title}`);
     
+    // Try original title FIRST (often better for international databases)
     let searchResponse = await unogsClient.get('/search', {
       params: {
-        query: movieDetails.title,
+        query: movieDetails.original_title || movieDetails.title,
         type: 'movie',
         limit: 10
       }
     });
 
-    if (!searchResponse.data?.results || searchResponse.data.results.length === 0) {
-      console.log(`No results with French title, trying original: ${movieDetails.original_title}`);
+    console.log(`uNoGS search with original title "${movieDetails.original_title}" returned ${searchResponse.data?.results?.length || 0} results`);
+
+    // If no results with original title and we have a different French title, try French title
+    if ((!searchResponse.data?.results || searchResponse.data.results.length === 0) && 
+        movieDetails.original_title !== movieDetails.title) {
+      console.log(`No results with original title, trying French title: ${movieDetails.title}`);
       searchResponse = await unogsClient.get('/search', {
         params: {
-          query: movieDetails.original_title,
+          query: movieDetails.title,
           type: 'movie',
           limit: 10
         }
       });
+      console.log(`uNoGS search with French title returned ${searchResponse.data?.results?.length || 0} results`);
     }
 
     const availabilities = [];
@@ -214,25 +220,29 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
         }
       }
       
-      // Third: Fallback to first result but log warning
+      // Third: Fallback to first result but with strict validation
       if (!bestMatch) {
         bestMatch = searchResponse.data.results[0];
         const resultYear = bestMatch.year || bestMatch.filmyear || 0;
-        console.log(`⚠️ Using first result (may not be accurate): ${bestMatch.title} (${resultYear})`);
         
-        if (movieDetails.release_year && resultYear !== 0) {
+        // CRITICAL: If we have a release year from TMDB but uNoGS result has no year
+        // or wrong year, DO NOT use this result!
+        if (movieDetails.release_year) {
+          if (resultYear === 0) {
+            console.log(`❌ uNoGS result has no year - cannot verify it's the correct movie`);
+            console.log(`❌ Refusing to show potentially wrong movie data`);
+            return [];
+          }
+          
           const yearDiff = Math.abs(resultYear - movieDetails.release_year);
           if (yearDiff > 1) {
-            console.log(`⚠️ Year mismatch! TMDB: ${movieDetails.release_year}, uNoGS: ${resultYear}`);
-            console.log(`⚠️ This is likely a different movie!`);
-            // Return empty results for wrong movie
+            console.log(`❌ Year mismatch! TMDB: ${movieDetails.release_year}, uNoGS: ${resultYear}`);
+            console.log(`❌ This is a different movie - refusing to show wrong data`);
             return [];
           }
         }
         
-        if (resultYear === 0) {
-          console.log(`⚠️ uNoGS result has no year information - accuracy cannot be verified`);
-        }
+        console.log(`⚠️ Using first result: ${bestMatch.title} (${resultYear})`);
       }
 
       const netflixId = bestMatch.nfid || bestMatch.id;
