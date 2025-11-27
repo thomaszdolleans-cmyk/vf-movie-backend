@@ -88,20 +88,9 @@ app.get('/api/movie/:tmdb_id/availability', async (req, res) => {
 
     const movieDetails = await getOrCreateMovie(tmdb_id);
 
-    const cacheCheck = await pool.query(
-      'SELECT * FROM availabilities WHERE movie_id = $1 AND last_checked > NOW() - INTERVAL \'7 days\'',
-      [tmdb_id]
-    );
-
-    let availabilities;
-
-    if (cacheCheck.rows.length > 0) {
-      console.log('Using cached data');
-      availabilities = cacheCheck.rows;
-    } else {
-      console.log('Fetching fresh data from uNoGS...');
-      availabilities = await fetchAndCacheAvailability(tmdb_id, movieDetails);
-    }
+    // Always fetch fresh data - no cache
+    console.log('Fetching fresh data from uNoGS...');
+    const availabilities = await fetchAndCacheAvailability(tmdb_id, movieDetails);
 
     let filtered = availabilities;
     if (audio_filter === 'vf') {
@@ -370,6 +359,34 @@ app.get('/api/test-unogs/:netflixid', async (req, res) => {
       error: error.message,
       details: error.response?.data
     });
+  }
+});
+
+// VIDER TOUT LE CACHE
+app.get('/api/clear-all-cache', async (req, res) => {
+  try {
+    const result = await pool.query('DELETE FROM availabilities');
+    res.json({ 
+      success: true, 
+      message: 'All cache cleared',
+      rowsDeleted: result.rowCount
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// VIDER LE CACHE D'UN FILM SPÉCIFIQUE
+app.get('/api/clear-cache/:tmdb_id', async (req, res) => {
+  try {
+    const result = await pool.query('DELETE FROM availabilities WHERE movie_id = $1', [req.params.tmdb_id]);
+    res.json({ 
+      success: true, 
+      message: 'Cache cleared for this movie',
+      rowsDeleted: result.rowCount
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
