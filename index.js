@@ -12,47 +12,15 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// Auto-create tables on startup
 async function initDatabase() {
   try {
     console.log('Initializing database...');
     
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS movies (
-        id INTEGER PRIMARY KEY,
-        title VARCHAR(500) NOT NULL,
-        original_title VARCHAR(500),
-        release_year INTEGER,
-        tmdb_data JSONB,
-        last_updated TIMESTAMP DEFAULT NOW()
-      );
-    `);
-    
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS availabilities (
-        id SERIAL PRIMARY KEY,
-        movie_id INTEGER NOT NULL,
-        country_code VARCHAR(2) NOT NULL,
-        platform VARCHAR(50) NOT NULL,
-        has_french_audio BOOLEAN DEFAULT FALSE,
-        has_french_subtitles BOOLEAN DEFAULT FALSE,
-        netflix_id VARCHAR(50),
-        last_checked TIMESTAMP DEFAULT NOW(),
-        UNIQUE(movie_id, country_code, platform)
-      );
-    `);
-    
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_availabilities_movie_id ON availabilities(movie_id);
-    `);
-    
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_availabilities_french_audio ON availabilities(movie_id, has_french_audio);
-    `);
-    
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title);
-    `);
+    await pool.query(`CREATE TABLE IF NOT EXISTS movies (id INTEGER PRIMARY KEY, title VARCHAR(500) NOT NULL, original_title VARCHAR(500), release_year INTEGER, tmdb_data JSONB, last_updated TIMESTAMP DEFAULT NOW());`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS availabilities (id SERIAL PRIMARY KEY, movie_id INTEGER NOT NULL, country_code VARCHAR(2) NOT NULL, platform VARCHAR(50) NOT NULL, has_french_audio BOOLEAN DEFAULT FALSE, has_french_subtitles BOOLEAN DEFAULT FALSE, netflix_id VARCHAR(50), last_checked TIMESTAMP DEFAULT NOW(), UNIQUE(movie_id, country_code, platform));`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_availabilities_movie_id ON availabilities(movie_id);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_availabilities_french_audio ON availabilities(movie_id, has_french_audio);`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title);`);
     
     console.log('✅ Database initialized!');
   } catch (error) {
@@ -71,7 +39,6 @@ const tmdbClient = axios.create({
   params: { api_key: process.env.TMDB_API_KEY }
 });
 
-// uNoGSng API client
 const unogsClient = axios.create({
   baseURL: 'https://unogsng.p.rapidapi.com',
   headers: {
@@ -88,13 +55,9 @@ app.get('/api/search', async (req, res) => {
       return res.status(400).json({ error: 'Query must be at least 2 characters' });
     }
 
-    console.log(`Searching for: "${searchQuery}"`);
-
     const tmdbResponse = await tmdbClient.get('/search/movie', {
       params: { query: searchQuery, language: 'fr-FR' }
     });
-
-    console.log(`TMDB found ${tmdbResponse.data.results.length} results`);
 
     const movies = await Promise.all(
       tmdbResponse.data.results.slice(0, 10).map(async (movie) => {
@@ -211,8 +174,7 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
   try {
     console.log(`Searching uNoGS for: ${movieDetails.title}`);
     
-    // Search using the /search endpoint with query parameter
-    const searchResponse = await unogsClient.get('/search', {
+    let searchResponse = await unogsClient.get('/search', {
       params: {
         query: movieDetails.title,
         type: 'movie',
@@ -220,15 +182,22 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
       }
     });
 
-    console.log('uNoGS search response:', searchResponse.data ? 'Success' : 'No data');
+    if (!searchResponse.data?.results || searchResponse.data.results.length === 0) {
+      console.log(`No results with French title, trying original: ${movieDetails.original_title}`);
+      searchResponse = await unogsClient.get('/search', {
+        params: {
+          query: movieDetails.original_title,
+          type: 'movie',
+          limit: 10
+        }
+      });
+    }
 
     const availabilities = [];
 
     if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
-      // Find the best match
       let bestMatch = searchResponse.data.results[0];
       
-      // Try to find exact title match
       const exactMatch = searchResponse.data.results.find(result => 
         result.title?.toLowerCase() === movieDetails.title.toLowerCase() ||
         result.title?.toLowerCase() === movieDetails.original_title?.toLowerCase()
@@ -241,36 +210,54 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
       const netflixId = bestMatch.nfid || bestMatch.id;
       console.log(`Found Netflix ID: ${netflixId} for title: ${bestMatch.title}`);
 
-      // Get countries where this title is available
+      let hasFrenchAudio = false;
+      let hasFrenchSubs = false;
+      let countries = [];
+
+      const audioList = bestMatch.audio || [];
+      const subtitleList = bestMatch.subtitle || [];
+      
+      hasFrenchAudio = audioList.some(a => {
+        const lower = String(a).toLowerCase();
+        return lower.includes('french') || lower.includes('français') || lower === 'fr';
+      });
+      
+      hasFrenchSubs = subtitleList.some(s => {
+        const lower = String(s).toLowerCase();
+        return lower.includes('french') || lower.includes('français') || lower === 'fr';
+      });
+      
       if (bestMatch.clist) {
-        const countries = bestMatch.clist.split(',');
-        
-        // Check audio/subtitle info from the search result
-        const audioList = bestMatch.audio || [];
-        const subtitleList = bestMatch.subtitle || [];
-        
-        const hasFrenchAudio = audioList.some(a => a.toLowerCase().includes('french') || a.toLowerCase().includes('français'));
-        const hasFrenchSubs = subtitleList.some(s => s.toLowerCase().includes('french') || s.toLowerCase().includes('français'));
+        countries = bestMatch.clist.split(',')
+          .map(c => c.trim())
+          .filter(c => c.length === 2)
+          .map(c => c.toUpperCase());
+      }
+      
+      console.log(`Audio list:`, audioList);
+      console.log(`Subtitle list:`, subtitleList);
+      console.log(`French audio: ${hasFrenchAudio}, French subs: ${hasFrenchSubs}`);
+      console.log(`Available in ${countries.length} countries: ${countries.join(', ')}`);
 
-        console.log(`French audio: ${hasFrenchAudio}, French subs: ${hasFrenchSubs}`);
-        console.log(`Available in ${countries.length} countries`);
-
-        for (const countryCode of countries) {
+      for (const countryCode of countries) {
+        try {
           await pool.query(
             `INSERT INTO availabilities (movie_id, country_code, platform, has_french_audio, has_french_subtitles, netflix_id, last_checked)
              VALUES ($1, $2, $3, $4, $5, $6, NOW())
              ON CONFLICT (movie_id, country_code, platform) 
              DO UPDATE SET has_french_audio = $4, has_french_subtitles = $5, netflix_id = $6, last_checked = NOW()`,
-            [tmdb_id, countryCode.trim(), 'netflix', hasFrenchAudio, hasFrenchSubs, netflixId]
+            [tmdb_id, countryCode, 'netflix', hasFrenchAudio, hasFrenchSubs, netflixId]
           );
 
           availabilities.push({
-            country_code: countryCode.trim(),
+            country_code: countryCode,
             has_french_audio: hasFrenchAudio,
             has_french_subtitles: hasFrenchSubs,
             netflix_id: netflixId,
             platform: 'netflix'
           });
+        } catch (dbError) {
+          console.error(`Failed to insert country ${countryCode}:`, dbError.message);
         }
       }
     } else {
@@ -306,9 +293,6 @@ app.get('/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 VF Movie Finder API running on port ${PORT}`);
-  console.log(`📍 Endpoints:`);
-  console.log(`   - GET /api/search?query=inception`);
-  console.log(`   - GET /api/movie/:tmdb_id/availability?audio_filter=vf`);
 });
 
 module.exports = app;
