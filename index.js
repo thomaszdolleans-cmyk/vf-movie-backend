@@ -184,6 +184,7 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
     if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
       let bestMatch = searchResponse.data.results[0];
       
+      // Try to find exact title match
       const exactMatch = searchResponse.data.results.find(result => 
         result.title?.toLowerCase() === movieDetails.title.toLowerCase() ||
         result.title?.toLowerCase() === movieDetails.original_title?.toLowerCase()
@@ -192,9 +193,29 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
       if (exactMatch) {
         bestMatch = exactMatch;
       }
+      
+      // Verify year matches (within 1 year tolerance for accuracy)
+      if (movieDetails.release_year && bestMatch.year) {
+        const yearDiff = Math.abs(bestMatch.year - movieDetails.release_year);
+        if (yearDiff > 1) {
+          console.log(`⚠️ Year mismatch! TMDB: ${movieDetails.release_year}, uNoGS: ${bestMatch.year}`);
+          console.log(`This might be a different movie with similar title`);
+          
+          // Try to find a better match with correct year
+          const yearMatch = searchResponse.data.results.find(result => {
+            const resultYear = result.year || result.filmyear;
+            return resultYear && Math.abs(resultYear - movieDetails.release_year) <= 1;
+          });
+          
+          if (yearMatch) {
+            console.log(`✅ Found better match with correct year: ${yearMatch.title} (${yearMatch.year})`);
+            bestMatch = yearMatch;
+          }
+        }
+      }
 
       const netflixId = bestMatch.nfid || bestMatch.id;
-      console.log(`Found Netflix ID: ${netflixId} for title: ${bestMatch.title}`);
+      console.log(`Found Netflix ID: ${netflixId} for title: ${bestMatch.title} (${bestMatch.year})`);
 
       // Get countries and audio/subtitle details using titlecountries endpoint
       try {
