@@ -15,13 +15,11 @@ const pool = new Pool({
 async function initDatabase() {
   try {
     console.log('Initializing database...');
-    
     await pool.query(`CREATE TABLE IF NOT EXISTS movies (id INTEGER PRIMARY KEY, title VARCHAR(500) NOT NULL, original_title VARCHAR(500), release_year INTEGER, tmdb_data JSONB, last_updated TIMESTAMP DEFAULT NOW());`);
     await pool.query(`CREATE TABLE IF NOT EXISTS availabilities (id SERIAL PRIMARY KEY, movie_id INTEGER NOT NULL, country_code VARCHAR(2) NOT NULL, platform VARCHAR(50) NOT NULL, has_french_audio BOOLEAN DEFAULT FALSE, has_french_subtitles BOOLEAN DEFAULT FALSE, netflix_id VARCHAR(50), last_checked TIMESTAMP DEFAULT NOW(), UNIQUE(movie_id, country_code, platform));`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_availabilities_movie_id ON availabilities(movie_id);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_availabilities_french_audio ON availabilities(movie_id, has_french_audio);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title);`);
-    
     console.log('✅ Database initialized!');
   } catch (error) {
     console.error('❌ Database init failed:', error.message);
@@ -50,7 +48,6 @@ const unogsClient = axios.create({
 app.get('/api/search', async (req, res) => {
   try {
     const searchQuery = req.query.query;
-    
     if (!searchQuery || searchQuery.length < 2) {
       return res.status(400).json({ error: 'Query must be at least 2 characters' });
     }
@@ -210,32 +207,57 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
       const netflixId = bestMatch.nfid || bestMatch.id;
       console.log(`Found Netflix ID: ${netflixId} for title: ${bestMatch.title}`);
 
+      // Get title details for audio/subtitle info
       let hasFrenchAudio = false;
       let hasFrenchSubs = false;
-      let countries = [];
 
-      const audioList = bestMatch.audio || [];
-      const subtitleList = bestMatch.subtitle || [];
-      
-      hasFrenchAudio = audioList.some(a => {
-        const lower = String(a).toLowerCase();
-        return lower.includes('french') || lower.includes('français') || lower === 'fr';
-      });
-      
-      hasFrenchSubs = subtitleList.some(s => {
-        const lower = String(s).toLowerCase();
-        return lower.includes('french') || lower.includes('français') || lower === 'fr';
-      });
-      
-      if (bestMatch.clist) {
-        countries = bestMatch.clist.split(',')
-          .map(c => c.trim())
-          .filter(c => c.length === 2)
-          .map(c => c.toUpperCase());
+      try {
+        console.log('Fetching title details...');
+        const detailsResponse = await unogsClient.get('/title', {
+          params: { netflixid: netflixId }
+        });
+
+        if (detailsResponse.data) {
+          const audioList = detailsResponse.data.audio || [];
+          const subtitleList = detailsResponse.data.subtitle || [];
+          
+          console.log('Audio from details:', audioList);
+          console.log('Subtitles from details:', subtitleList);
+          
+          hasFrenchAudio = audioList.some(a => {
+            const lower = String(a).toLowerCase();
+            return lower.includes('french') || lower.includes('français') || lower === 'fr';
+          });
+          
+          hasFrenchSubs = subtitleList.some(s => {
+            const lower = String(s).toLowerCase();
+            return lower.includes('french') || lower.includes('français') || lower === 'fr';
+          });
+        }
+      } catch (detailError) {
+        console.error('Error fetching title details:', detailError.message);
       }
-      
-      console.log(`Audio list:`, audioList);
-      console.log(`Subtitle list:`, subtitleList);
+
+      // Get countries where available using /countries endpoint
+      let countries = [];
+      try {
+        console.log('Fetching title countries...');
+        const countriesResponse = await unogsClient.get('/countries', {
+          params: { netflixid: netflixId }
+        });
+
+        console.log('Countries response:', countriesResponse.data);
+
+        if (countriesResponse.data && Array.isArray(countriesResponse.data.results)) {
+          countries = countriesResponse.data.results
+            .map(c => c.country_code || c.countrycode || c.cc)
+            .filter(c => c && c.length === 2)
+            .map(c => c.toUpperCase());
+        }
+      } catch (countryError) {
+        console.error('Error fetching countries:', countryError.message);
+      }
+
       console.log(`French audio: ${hasFrenchAudio}, French subs: ${hasFrenchSubs}`);
       console.log(`Available in ${countries.length} countries: ${countries.join(', ')}`);
 
@@ -269,7 +291,6 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
     console.error('uNoGS fetch error:', error.message);
     if (error.response) {
       console.error('uNoGS error status:', error.response.status);
-      console.error('uNoGS error data:', error.response.data);
     }
     return [];
   }
