@@ -7,10 +7,19 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+// Parse DATABASE_URL to force IPv4
+const dbConfig = {
+  host: 'db.przvqsxuhqquodbafxkm.supabase.co',
+  port: 5432,
+  database: 'postgres',
+  user: 'postgres',
+  password: 'RvBG?#fL2zyLjWRRvBG?#fL2zyLjWR',
+  ssl: {
+    rejectUnauthorized: false
+  }
+};
+
+const pool = new Pool(dbConfig);
 
 app.use(cors());
 app.use(express.json());
