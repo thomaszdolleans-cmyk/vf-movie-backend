@@ -7,19 +7,64 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Parse DATABASE_URL to force IPv4
-const dbConfig = {
-  host: 'db.przvqsxuhqquodbafxkm.supabase.co',
-  port: 5432,
-  database: 'postgres',
-  user: 'postgres',
-  password: 'RvBG?#fL2zyLjWRRvBG?#fL2zyLjWR',
-  ssl: {
-    rejectUnauthorized: false
-  }
-};
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
-const pool = new Pool(dbConfig);
+// Auto-create tables on startup
+async function initDatabase() {
+  try {
+    console.log('🔄 Initializing database...');
+    
+    // Create movies table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS movies (
+        id INTEGER PRIMARY KEY,
+        title VARCHAR(500) NOT NULL,
+        original_title VARCHAR(500),
+        release_year INTEGER,
+        tmdb_data JSONB,
+        last_updated TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    
+    // Create availabilities table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS availabilities (
+        id SERIAL PRIMARY KEY,
+        movie_id INTEGER NOT NULL,
+        country_code VARCHAR(2) NOT NULL,
+        platform VARCHAR(50) NOT NULL,
+        has_french_audio BOOLEAN DEFAULT FALSE,
+        has_french_subtitles BOOLEAN DEFAULT FALSE,
+        netflix_id VARCHAR(50),
+        last_checked TIMESTAMP DEFAULT NOW(),
+        UNIQUE(movie_id, country_code, platform)
+      );
+    `);
+    
+    // Create indexes
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_availabilities_movie_id ON availabilities(movie_id);
+    `);
+    
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_availabilities_french_audio ON availabilities(movie_id, has_french_audio);
+    `);
+    
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title);
+    `);
+    
+    console.log('✅ Database initialized successfully!');
+  } catch (error) {
+    console.error('❌ Database initialization failed:', error.message);
+  }
+}
+
+// Initialize database on startup
+initDatabase();
 
 app.use(cors());
 app.use(express.json());
@@ -46,9 +91,13 @@ app.get('/api/search', async (req, res) => {
       return res.status(400).json({ error: 'Query must be at least 2 characters' });
     }
 
+    console.log(`Searching for: "${searchQuery}"`);
+
     const tmdbResponse = await tmdbClient.get('/search/movie', {
       params: { query: searchQuery, language: 'fr-FR' }
     });
+
+    console.log(`TMDB found ${tmdbResponse.data.results.length} results`);
 
     const movies = await Promise.all(
       tmdbResponse.data.results.slice(0, 10).map(async (movie) => {
