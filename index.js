@@ -316,16 +316,18 @@ app.get('/api/test-unogs/:netflixid', async (req, res) => {
     const netflixId = req.params.netflixid;
     console.log(`Testing uNoGS for Netflix ID: ${netflixId}`);
     
-    const titleResponse = await unogsClient.get('/title', {
+    // Test titlecountries endpoint
+    const countriesResponse = await unogsClient.get('/titlecountries', {
       params: { netflixid: netflixId }
     });
     
-    console.log('Full API response:', JSON.stringify(titleResponse.data, null, 2));
+    console.log('Title Countries response:', JSON.stringify(countriesResponse.data, null, 2));
     
     res.json({
       success: true,
       netflixId: netflixId,
-      data: titleResponse.data
+      endpoint: '/titlecountries',
+      data: countriesResponse.data
     });
     
   } catch (error) {
