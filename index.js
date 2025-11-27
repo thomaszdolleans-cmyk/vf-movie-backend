@@ -207,9 +207,9 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
       const netflixId = bestMatch.nfid || bestMatch.id;
       console.log(`Found Netflix ID: ${netflixId} for title: ${bestMatch.title}`);
 
-      // Get title details for audio/subtitle info
       let hasFrenchAudio = false;
       let hasFrenchSubs = false;
+      let countries = [];
 
       try {
         console.log('Fetching title details...');
@@ -238,8 +238,6 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
         console.error('Error fetching title details:', detailError.message);
       }
 
-      // Get countries where available using /countries endpoint
-      let countries = [];
       try {
         console.log('Fetching title countries...');
         const countriesResponse = await unogsClient.get('/countries', {
@@ -310,6 +308,37 @@ function getCountryName(code) {
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ENDPOINT DE TEST - TEMPORAIRE
+app.get('/api/test-unogs/:netflixid', async (req, res) => {
+  try {
+    const netflixId = req.params.netflixid;
+    console.log(`Testing uNoGS for Netflix ID: ${netflixId}`);
+    
+    const titleResponse = await unogsClient.get('/title', {
+      params: { netflixid: netflixId }
+    });
+    
+    console.log('Full API response:', JSON.stringify(titleResponse.data, null, 2));
+    
+    res.json({
+      success: true,
+      netflixId: netflixId,
+      data: titleResponse.data
+    });
+    
+  } catch (error) {
+    console.error('Test error:', error.message);
+    if (error.response) {
+      console.error('Error response:', error.response.data);
+    }
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.response?.data
+    });
+  }
 });
 
 app.listen(PORT, () => {
