@@ -207,77 +207,56 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
       const netflixId = bestMatch.nfid || bestMatch.id;
       console.log(`Found Netflix ID: ${netflixId} for title: ${bestMatch.title}`);
 
-      let hasFrenchAudio = false;
-      let hasFrenchSubs = false;
-      let countries = [];
-
-      try {
-        console.log('Fetching title details...');
-        const detailsResponse = await unogsClient.get('/title', {
-          params: { netflixid: netflixId }
-        });
-
-        if (detailsResponse.data) {
-          const audioList = detailsResponse.data.audio || [];
-          const subtitleList = detailsResponse.data.subtitle || [];
-          
-          console.log('Audio from details:', audioList);
-          console.log('Subtitles from details:', subtitleList);
-          
-          hasFrenchAudio = audioList.some(a => {
-            const lower = String(a).toLowerCase();
-            return lower.includes('french') || lower.includes('français') || lower === 'fr';
-          });
-          
-          hasFrenchSubs = subtitleList.some(s => {
-            const lower = String(s).toLowerCase();
-            return lower.includes('french') || lower.includes('français') || lower === 'fr';
-          });
-        }
-      } catch (detailError) {
-        console.error('Error fetching title details:', detailError.message);
-      }
-
+      // Get countries and audio/subtitle details using titlecountries endpoint
       try {
         console.log('Fetching title countries...');
-        const countriesResponse = await unogsClient.get('/countries', {
+        const countriesResponse = await unogsClient.get('/titlecountries', {
           params: { netflixid: netflixId }
         });
 
-        console.log('Countries response:', countriesResponse.data);
+        console.log('Countries response received');
 
         if (countriesResponse.data && Array.isArray(countriesResponse.data.results)) {
-          countries = countriesResponse.data.results
-            .map(c => c.country_code || c.countrycode || c.cc)
-            .filter(c => c && c.length === 2)
-            .map(c => c.toUpperCase());
+          const countryResults = countriesResponse.data.results;
+          
+          console.log(`Found ${countryResults.length} countries with availability`);
+
+          for (const countryData of countryResults) {
+            const countryCode = countryData.cc;
+            const audioString = countryData.audio || '';
+            const subtitleString = countryData.subtitle || '';
+            
+            // Check if French audio or subtitles are available in THIS country
+            const hasFrenchAudio = audioString.toLowerCase().includes('french');
+            const hasFrenchSubs = subtitleString.toLowerCase().includes('french');
+
+            try {
+              await pool.query(
+                `INSERT INTO availabilities (movie_id, country_code, platform, has_french_audio, has_french_subtitles, netflix_id, last_checked)
+                 VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                 ON CONFLICT (movie_id, country_code, platform) 
+                 DO UPDATE SET has_french_audio = $4, has_french_subtitles = $5, netflix_id = $6, last_checked = NOW()`,
+                [tmdb_id, countryCode, 'netflix', hasFrenchAudio, hasFrenchSubs, netflixId]
+              );
+
+              availabilities.push({
+                country_code: countryCode,
+                has_french_audio: hasFrenchAudio,
+                has_french_subtitles: hasFrenchSubs,
+                netflix_id: netflixId,
+                platform: 'netflix'
+              });
+            } catch (dbError) {
+              console.error(`Failed to insert country ${countryCode}:`, dbError.message);
+            }
+          }
+          
+          console.log(`Cached ${availabilities.length} country availabilities`);
         }
       } catch (countryError) {
-        console.error('Error fetching countries:', countryError.message);
-      }
-
-      console.log(`French audio: ${hasFrenchAudio}, French subs: ${hasFrenchSubs}`);
-      console.log(`Available in ${countries.length} countries: ${countries.join(', ')}`);
-
-      for (const countryCode of countries) {
-        try {
-          await pool.query(
-            `INSERT INTO availabilities (movie_id, country_code, platform, has_french_audio, has_french_subtitles, netflix_id, last_checked)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())
-             ON CONFLICT (movie_id, country_code, platform) 
-             DO UPDATE SET has_french_audio = $4, has_french_subtitles = $5, netflix_id = $6, last_checked = NOW()`,
-            [tmdb_id, countryCode, 'netflix', hasFrenchAudio, hasFrenchSubs, netflixId]
-          );
-
-          availabilities.push({
-            country_code: countryCode,
-            has_french_audio: hasFrenchAudio,
-            has_french_subtitles: hasFrenchSubs,
-            netflix_id: netflixId,
-            platform: 'netflix'
-          });
-        } catch (dbError) {
-          console.error(`Failed to insert country ${countryCode}:`, dbError.message);
+        console.error('Error fetching titlecountries:', countryError.message);
+        if (countryError.response) {
+          console.error('Error status:', countryError.response.status);
         }
       }
     } else {
