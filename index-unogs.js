@@ -15,9 +15,8 @@ const pool = new Pool({
 // Auto-create tables on startup
 async function initDatabase() {
   try {
-    console.log('🔄 Initializing database...');
+    console.log('Initializing database...');
     
-    // Create movies table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS movies (
         id INTEGER PRIMARY KEY,
@@ -29,7 +28,6 @@ async function initDatabase() {
       );
     `);
     
-    // Create availabilities table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS availabilities (
         id SERIAL PRIMARY KEY,
@@ -44,7 +42,6 @@ async function initDatabase() {
       );
     `);
     
-    // Create indexes
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_availabilities_movie_id ON availabilities(movie_id);
     `);
@@ -57,13 +54,12 @@ async function initDatabase() {
       CREATE INDEX IF NOT EXISTS idx_movies_title ON movies(title);
     `);
     
-    console.log('✅ Database initialized successfully!');
+    console.log('✅ Database initialized!');
   } catch (error) {
-    console.error('❌ Database initialization failed:', error.message);
+    console.error('❌ Database init failed:', error.message);
   }
 }
 
-// Initialize database on startup
 initDatabase();
 
 app.use(cors());
@@ -75,11 +71,12 @@ const tmdbClient = axios.create({
   params: { api_key: process.env.TMDB_API_KEY }
 });
 
+// uNoGSng API client
 const unogsClient = axios.create({
-  baseURL: 'https://unogs-unogs-v1.p.rapidapi.com',
+  baseURL: 'https://unogsng.p.rapidapi.com',
   headers: {
     'X-RapidAPI-Key': process.env.UNOGS_API_KEY,
-    'X-RapidAPI-Host': 'unogs-unogs-v1.p.rapidapi.com'
+    'X-RapidAPI-Host': 'unogsng.p.rapidapi.com'
   }
 });
 
@@ -139,8 +136,10 @@ app.get('/api/movie/:tmdb_id/availability', async (req, res) => {
     let availabilities;
 
     if (cacheCheck.rows.length > 0) {
+      console.log('Using cached data');
       availabilities = cacheCheck.rows;
     } else {
+      console.log('Fetching fresh data from uNoGS...');
       availabilities = await fetchAndCacheAvailability(tmdb_id, movieDetails);
     }
 
@@ -210,39 +209,63 @@ async function getOrCreateMovie(tmdb_id) {
 
 async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
   try {
-    const searchResponse = await unogsClient.get('/search/titles', {
+    console.log(`Searching uNoGS for: ${movieDetails.title}`);
+    
+    // Search using the /search endpoint with query parameter
+    const searchResponse = await unogsClient.get('/search', {
       params: {
-        title: movieDetails.title,
-        type: 'movie'
+        query: movieDetails.title,
+        type: 'movie',
+        limit: 10
       }
     });
 
+    console.log('uNoGS search response:', searchResponse.data ? 'Success' : 'No data');
+
     const availabilities = [];
 
-    if (searchResponse.data.results && searchResponse.data.results.length > 0) {
-      const netflixId = searchResponse.data.results[0].netflix_id;
+    if (searchResponse.data && searchResponse.data.results && searchResponse.data.results.length > 0) {
+      // Find the best match
+      let bestMatch = searchResponse.data.results[0];
+      
+      // Try to find exact title match
+      const exactMatch = searchResponse.data.results.find(result => 
+        result.title?.toLowerCase() === movieDetails.title.toLowerCase() ||
+        result.title?.toLowerCase() === movieDetails.original_title?.toLowerCase()
+      );
+      
+      if (exactMatch) {
+        bestMatch = exactMatch;
+      }
 
-      const detailsResponse = await unogsClient.get(`/title/details`, {
-        params: { netflix_id: netflixId }
-      });
+      const netflixId = bestMatch.nfid || bestMatch.id;
+      console.log(`Found Netflix ID: ${netflixId} for title: ${bestMatch.title}`);
 
-      const details = detailsResponse.data;
+      // Get countries where this title is available
+      if (bestMatch.clist) {
+        const countries = bestMatch.clist.split(',');
+        
+        // Check audio/subtitle info from the search result
+        const audioList = bestMatch.audio || [];
+        const subtitleList = bestMatch.subtitle || [];
+        
+        const hasFrenchAudio = audioList.some(a => a.toLowerCase().includes('french') || a.toLowerCase().includes('français'));
+        const hasFrenchSubs = subtitleList.some(s => s.toLowerCase().includes('french') || s.toLowerCase().includes('français'));
 
-      if (details.country_list) {
-        for (const country of details.country_list) {
-          const hasFrenchAudio = details.audio?.includes('French') || false;
-          const hasFrenchSubs = details.subtitle?.includes('French') || false;
+        console.log(`French audio: ${hasFrenchAudio}, French subs: ${hasFrenchSubs}`);
+        console.log(`Available in ${countries.length} countries`);
 
+        for (const countryCode of countries) {
           await pool.query(
             `INSERT INTO availabilities (movie_id, country_code, platform, has_french_audio, has_french_subtitles, netflix_id, last_checked)
              VALUES ($1, $2, $3, $4, $5, $6, NOW())
              ON CONFLICT (movie_id, country_code, platform) 
              DO UPDATE SET has_french_audio = $4, has_french_subtitles = $5, netflix_id = $6, last_checked = NOW()`,
-            [tmdb_id, country.country_code, 'netflix', hasFrenchAudio, hasFrenchSubs, netflixId]
+            [tmdb_id, countryCode.trim(), 'netflix', hasFrenchAudio, hasFrenchSubs, netflixId]
           );
 
           availabilities.push({
-            country_code: country.country_code,
+            country_code: countryCode.trim(),
             has_french_audio: hasFrenchAudio,
             has_french_subtitles: hasFrenchSubs,
             netflix_id: netflixId,
@@ -250,11 +273,17 @@ async function fetchAndCacheAvailability(tmdb_id, movieDetails) {
           });
         }
       }
+    } else {
+      console.log('No results found on uNoGS for this title');
     }
 
     return availabilities;
   } catch (error) {
     console.error('uNoGS fetch error:', error.message);
+    if (error.response) {
+      console.error('uNoGS error status:', error.response.status);
+      console.error('uNoGS error data:', error.response.data);
+    }
     return [];
   }
 }
