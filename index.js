@@ -240,6 +240,11 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
                localeLanguage === 'fra' || localeLanguage === 'fr' || localeLanguage === 'fre';
       }) || false;
 
+      // FILTER: Skip if no French audio AND no French subtitles
+      if (!hasFrenchAudio && !hasFrenchSubtitles) {
+        continue; // Skip this option - we only want French content
+      }
+
       // Debug logging for first few entries to check subtitle data
       if (availabilities.length < 5) {
         console.log(`📊 ${platformName} (${streamingType}${addonName ? ` - ${addonName}` : ''}) in ${countryName}:`, {
