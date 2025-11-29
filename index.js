@@ -146,9 +146,10 @@ const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 // Fetch streaming availability from Streaming Availability API
 async function fetchStreamingAvailability(imdbId) {
   try {
-    const response = await streamingClient.get('/get', {
+    // Use the correct v4 endpoint: /shows/movie/{imdb_id}
+    const response = await streamingClient.get(`/shows/movie/${imdbId}`, {
       params: {
-        imdb_id: imdbId,
+        series_granularity: 'show',
         output_language: 'fr'
       }
     });
@@ -162,36 +163,36 @@ async function fetchStreamingAvailability(imdbId) {
 
 // Process and cache streaming data
 async function processAndCacheStreaming(tmdbId, streamingData) {
-  if (!streamingData || !streamingData.streamingInfo) {
-    console.log('No streaming info available');
+  if (!streamingData || !streamingData.streamingOptions) {
+    console.log('No streaming options available');
     return [];
   }
 
   const availabilities = [];
-  const streamingInfo = streamingData.streamingInfo;
+  const streamingOptions = streamingData.streamingOptions;
 
   // Delete old cache for this movie
   await pool.query('DELETE FROM availabilities WHERE tmdb_id = $1', [tmdbId]);
 
   // Process each country
-  for (const [countryCode, platforms] of Object.entries(streamingInfo)) {
+  for (const [countryCode, options] of Object.entries(streamingOptions)) {
     const country = countryCode.toUpperCase();
     const countryName = getCountryName(country);
 
-    // Process each platform in this country
-    for (const [platformKey, streamOptions] of Object.entries(platforms)) {
-      if (!streamOptions || streamOptions.length === 0) continue;
+    // Process each streaming option in this country
+    for (const option of options) {
+      if (!option || !option.service) continue;
 
-      const platformName = PLATFORMS[platformKey] || platformKey;
-      const streamOption = streamOptions[0]; // Take first option
+      const platformKey = option.service.id;
+      const platformName = PLATFORMS[platformKey] || option.service.name || platformKey;
 
       // Check for French audio and subtitles
-      const hasFrenchAudio = streamOption.audios?.some(a => 
+      const hasFrenchAudio = option.audios?.some(a => 
         a.language === 'fra' || a.language === 'fr'
       ) || false;
 
-      const hasFrenchSubtitles = streamOption.subtitles?.some(s => 
-        s.language === 'fra' || s.language === 'fr'
+      const hasFrenchSubtitles = option.subtitles?.some(s => 
+        s.language === 'fra' || s.language === 'fr'  
       ) || false;
 
       // Only include if has French audio OR French subtitles
@@ -203,8 +204,8 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
           country_name: countryName,
           has_french_audio: hasFrenchAudio,
           has_french_subtitles: hasFrenchSubtitles,
-          streaming_url: streamOption.link || null,
-          quality: streamOption.quality || 'hd'
+          streaming_url: option.link || null,
+          quality: option.quality || 'hd'
         };
 
         // Insert into database
@@ -220,7 +221,7 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
               streaming_url = $7,
               quality = $8,
               updated_at = CURRENT_TIMESTAMP`,
-            [tmdbId, platformName, country, countryName, hasFrenchAudio, hasFrenchSubtitles, streamOption.link, streamOption.quality || 'hd']
+            [tmdbId, platformName, country, countryName, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
           );
 
           availabilities.push(availability);
@@ -386,6 +387,68 @@ app.get('/api/reset-database', async (req, res) => {
   } catch (error) {
     console.error('❌ Reset error:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// TEST ENDPOINT - Test Streaming Availability API
+app.get('/api/test-streaming-api', async (req, res) => {
+  try {
+    // Test with Inception (IMDB: tt1375666)
+    const testImdbId = 'tt1375666';
+    
+    console.log(`🧪 Testing Streaming Availability API with IMDB ID: ${testImdbId}`);
+    
+    // Check if API key is configured
+    if (!process.env.RAPIDAPI_KEY) {
+      return res.json({
+        success: false,
+        error: 'RAPIDAPI_KEY is not configured in environment variables',
+        configured: {
+          TMDB_API_KEY: !!process.env.TMDB_API_KEY,
+          RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
+          DATABASE_URL: !!process.env.DATABASE_URL
+        }
+      });
+    }
+
+    const response = await streamingClient.get(`/shows/movie/${testImdbId}`, {
+      params: {
+        series_granularity: 'show',
+        output_language: 'fr'
+      }
+    });
+
+    const platformCount = Object.keys(response.data.streamingOptions || {}).length;
+    const platforms = {};
+    
+    // Count platforms
+    if (response.data.streamingOptions) {
+      for (const [country, countryPlatforms] of Object.entries(response.data.streamingOptions)) {
+        for (const platformData of countryPlatforms) {
+          const platform = platformData.service?.id || 'unknown';
+          platforms[platform] = (platforms[platform] || 0) + 1;
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'API is working!',
+      test_movie: 'Inception (tt1375666)',
+      countries_found: platformCount,
+      platforms_found: platforms,
+      sample_data: response.data.streamingOptions ? Object.keys(response.data.streamingOptions).slice(0, 5) : [],
+      api_key_configured: true
+    });
+
+  } catch (error) {
+    console.error('❌ Test failed:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      error_details: error.response?.data,
+      api_key_configured: !!process.env.RAPIDAPI_KEY
+    });
   }
 });
 
