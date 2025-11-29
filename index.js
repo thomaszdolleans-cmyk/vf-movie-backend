@@ -195,6 +195,7 @@ async function fetchStreamingAvailability(tmdbId, mediaType = 'movie') {
     const endpoint = `/shows/${showType}/${apiId}`;
     
     console.log(`📡 Fetching ${mediaType} data: ${endpoint}`);
+    console.log(`🔑 Using API ID: ${apiId} (from TMDB ID: ${tmdbId})`);
     
     const response = await streamingClient.get(endpoint, {
       params: {
@@ -203,13 +204,18 @@ async function fetchStreamingAvailability(tmdbId, mediaType = 'movie') {
       }
     });
 
+    console.log(`✅ Successfully fetched data for ${mediaType} ${apiId}`);
     return response.data;
   } catch (error) {
     if (error.response?.status === 404) {
-      console.log(`ℹ️ No streaming data found for ${mediaType} ID ${tmdbId}`);
+      console.log(`❌ 404 Not Found for ${mediaType} ID ${apiId}`);
+      console.log(`Full URL attempted: ${error.config?.url}`);
+      console.log(`Response:`, error.response?.data);
       return null;
     }
-    console.error('Streaming Availability API error:', error.response?.data || error.message);
+    console.error(`❌ Streaming API error for ${mediaType} ${apiId}:`, error.response?.data || error.message);
+    console.error(`Status:`, error.response?.status);
+    console.error(`Full error:`, error);
     return null;
   }
 }
@@ -521,6 +527,60 @@ app.get('/api/movie/:id/availability', async (req, res) => {
   return res.redirect(308, `/api/media/movie/${req.params.id}/availability`);
 });
 
+// Debug endpoint - test search to see what data is returned
+app.get('/api/debug-search/:tmdb_id', async (req, res) => {
+  try {
+    const tmdb_id = parseInt(req.params.tmdb_id);
+    
+    console.log(`🔍 Testing search for TMDB ID: ${tmdb_id}`);
+    
+    const response = await streamingClient.get('/shows/search/filters', {
+      params: {
+        country: 'us',
+        catalogs: 'netflix,prime,disney,hbo,apple,paramount',
+        show_type: 'series',
+        tmdb_id: tmdb_id,
+        series_granularity: 'show',
+        output_language: 'fr'
+      }
+    });
+
+    const shows = response.data?.shows || [];
+    
+    if (shows.length === 0) {
+      return res.json({
+        found: false,
+        tmdb_id,
+        message: 'No shows found with this TMDB ID'
+      });
+    }
+    
+    const show = shows[0];
+    
+    res.json({
+      found: true,
+      tmdb_id,
+      show: {
+        id: show.id,
+        title: show.title,
+        tmdbId: show.tmdbId,
+        imdbId: show.imdbId,
+        showType: show.showType,
+        streamingOptions: show.streamingOptions ? Object.keys(show.streamingOptions) : [],
+        total_countries: show.streamingOptions ? Object.keys(show.streamingOptions).length : 0,
+        first_country_sample: show.streamingOptions ? Object.entries(show.streamingOptions)[0] : null
+      },
+      note: "If streamingOptions is present in search results, we don't need a second fetch!"
+    });
+  } catch (error) {
+    console.error('Search debug error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      response_data: error.response?.data 
+    });
+  }
+});
+
 // Debug endpoint - check series structure
 app.get('/api/debug-series/:tmdb_id', async (req, res) => {
   try {
@@ -529,31 +589,59 @@ app.get('/api/debug-series/:tmdb_id', async (req, res) => {
     console.log(`🔍 DEBUG: Fetching series data for TMDB ID: ${tmdb_id}`);
     
     // Step 1: Search for API ID
+    console.log(`Step 1: Searching for API ID...`);
     const apiId = await searchShowByTmdbId(tmdb_id, 'tv');
     
     if (!apiId) {
       return res.json({ 
         error: 'Could not find series in API',
         tmdb_id,
-        step: 'search_failed'
+        step: 'search_failed',
+        suggestion: 'The series might not be in the Streaming Availability database'
       });
     }
     
-    // Step 2: Get streaming data
-    const streamingData = await fetchStreamingAvailability(tmdb_id, 'tv');
+    console.log(`✅ Found API ID: ${apiId}`);
     
-    if (!streamingData) {
-      return res.json({ 
-        error: 'No streaming data found',
+    // Step 2: Try to get the show details directly
+    console.log(`Step 2: Fetching show data with API ID ${apiId}...`);
+    
+    let showData = null;
+    let fetchError = null;
+    
+    try {
+      const response = await streamingClient.get(`/shows/series/${apiId}`, {
+        params: {
+          series_granularity: 'season',
+          output_language: 'fr'
+        }
+      });
+      showData = response.data;
+    } catch (error) {
+      fetchError = {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message,
+        url: error.config?.url,
+        params: error.config?.params
+      };
+    }
+    
+    if (!showData) {
+      return res.json({
+        error: 'Fetch failed',
         tmdb_id,
         api_id: apiId,
-        step: 'fetch_failed'
+        step: 'fetch_failed',
+        error_details: fetchError,
+        suggestion: 'The API might not have streaming data for this series, or the endpoint format is wrong'
       });
     }
     
-    // Return first few options to see structure
+    // Step 3: Show sample data
     const sampleOptions = [];
-    const streamingOptions = streamingData.streamingOptions || {};
+    const streamingOptions = showData.streamingOptions || {};
     
     for (const [country, options] of Object.entries(streamingOptions)) {
       if (sampleOptions.length >= 5) break;
@@ -577,11 +665,16 @@ app.get('/api/debug-series/:tmdb_id', async (req, res) => {
       api_id: apiId,
       total_countries: Object.keys(streamingOptions).length,
       sample_options: sampleOptions,
-      note: "If seasons is an array, we'll create one entry per season"
+      show_title: showData.title,
+      note: "Success! Data was fetched correctly"
     });
   } catch (error) {
     console.error('Debug series error:', error);
-    res.status(500).json({ error: error.message, stack: error.stack });
+    res.status(500).json({ 
+      error: error.message, 
+      stack: error.stack,
+      response_data: error.response?.data 
+    });
   }
 });
 
