@@ -26,13 +26,14 @@ pool.query(`
     country_code VARCHAR(10) NOT NULL,
     country_name VARCHAR(100) NOT NULL,
     streaming_type VARCHAR(20) NOT NULL DEFAULT 'subscription',
+    addon_name VARCHAR(100),
     has_french_audio BOOLEAN DEFAULT false,
     has_french_subtitles BOOLEAN DEFAULT false,
     streaming_url TEXT,
     quality VARCHAR(20),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(tmdb_id, platform, country_code, streaming_type)
+    UNIQUE(tmdb_id, platform, country_code, streaming_type, addon_name)
   );
 
   CREATE INDEX IF NOT EXISTS idx_tmdb_platform ON availabilities(tmdb_id, platform);
@@ -190,6 +191,11 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
       
       // Get streaming type (subscription, rent, buy, free, addon)
       const streamingType = option.type || 'subscription';
+      
+      // Get addon name if type is addon
+      const addonName = streamingType === 'addon' && option.addon?.name 
+        ? option.addon.name 
+        : null;
 
       // Check for French audio and subtitles with improved detection
       const hasFrenchAudio = option.audios?.some(a => {
@@ -213,7 +219,7 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
 
       // Debug logging for first few entries to check subtitle data
       if (availabilities.length < 5) {
-        console.log(`📊 ${platformName} (${streamingType}) in ${countryName}:`, {
+        console.log(`📊 ${platformName} (${streamingType}${addonName ? ` - ${addonName}` : ''}) in ${countryName}:`, {
           audios: option.audios?.map(a => a.language),
           subtitles: option.subtitles?.map(s => ({ 
             lang: s.language, 
@@ -223,6 +229,7 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
           hasFrenchAudio,
           hasFrenchSubtitles,
           type: streamingType,
+          addon: addonName,
           quality: option.quality
         });
       }
@@ -234,6 +241,7 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
         country_code: country,
         country_name: countryName,
         streaming_type: streamingType,
+        addon_name: addonName,
         has_french_audio: hasFrenchAudio,
         has_french_subtitles: hasFrenchSubtitles,
         streaming_url: option.link || null,
@@ -244,16 +252,16 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
       try {
         await pool.query(
           `INSERT INTO availabilities 
-          (tmdb_id, platform, country_code, country_name, streaming_type, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
-          ON CONFLICT (tmdb_id, platform, country_code, streaming_type) 
+          (tmdb_id, platform, country_code, country_name, streaming_type, addon_name, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+          ON CONFLICT (tmdb_id, platform, country_code, streaming_type, addon_name) 
           DO UPDATE SET 
-            has_french_audio = $6,
-            has_french_subtitles = $7,
-            streaming_url = $8,
-            quality = $9,
+            has_french_audio = $7,
+            has_french_subtitles = $8,
+            streaming_url = $9,
+            quality = $10,
             updated_at = CURRENT_TIMESTAMP`,
-          [tmdbId, platformName, country, countryName, streamingType, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
+          [tmdbId, platformName, country, countryName, streamingType, addonName, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
         );
 
         availabilities.push(availability);
@@ -393,13 +401,14 @@ app.get('/api/reset-database', async (req, res) => {
         country_code VARCHAR(10) NOT NULL,
         country_name VARCHAR(100) NOT NULL,
         streaming_type VARCHAR(20) NOT NULL DEFAULT 'subscription',
+        addon_name VARCHAR(100),
         has_french_audio BOOLEAN DEFAULT false,
         has_french_subtitles BOOLEAN DEFAULT false,
         streaming_url TEXT,
         quality VARCHAR(20),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(tmdb_id, platform, country_code, streaming_type)
+        UNIQUE(tmdb_id, platform, country_code, streaming_type, addon_name)
       );
 
       CREATE INDEX IF NOT EXISTS idx_tmdb_platform ON availabilities(tmdb_id, platform);
@@ -407,10 +416,10 @@ app.get('/api/reset-database', async (req, res) => {
       CREATE INDEX IF NOT EXISTS idx_streaming_type ON availabilities(streaming_type);
     `);
     
-    console.log('✅ New table created successfully with streaming_type support!');
+    console.log('✅ New table created successfully with streaming_type and addon_name support!');
     res.json({ 
       success: true, 
-      message: 'Database reset successfully! Table recreated with streaming_type column for VOD support.' 
+      message: 'Database reset successfully! Table recreated with streaming_type and addon_name columns for VOD and addon support.' 
     });
   } catch (error) {
     console.error('❌ Reset error:', error);
@@ -531,7 +540,53 @@ app.get('/api/debug-subtitles/:tmdb_id', async (req, res) => {
   }
 });
 
-// DEBUG ENDPOINT - Check streaming types (subscription vs VOD)
+// DEBUG ENDPOINT - Check addon details
+app.get('/api/debug-addons/:tmdb_id', async (req, res) => {
+  try {
+    const tmdbId = req.params.tmdb_id;
+    
+    console.log(`🔍 Debug: Fetching addon details for TMDB ID ${tmdbId}`);
+    
+    const response = await streamingClient.get(`/shows/movie/${tmdbId}`, {
+      params: {
+        series_granularity: 'show',
+        output_language: 'fr'
+      }
+    });
+
+    const addonSamples = [];
+    
+    if (response.data.streamingOptions) {
+      for (const [country, options] of Object.entries(response.data.streamingOptions)) {
+        for (const option of options) {
+          if (option.type === 'addon') {
+            addonSamples.push({
+              country,
+              platform: option.service?.name || option.service?.id,
+              type: option.type,
+              addon: option.addon,
+              service: option.service,
+              full_option: option
+            });
+          }
+        }
+      }
+    }
+
+    res.json({
+      tmdb_id: tmdbId,
+      total_addons: addonSamples.length,
+      addon_samples: addonSamples.slice(0, 5),
+      note: "Look for 'addon' field to see addon name"
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      details: error.response?.data
+    });
+  }
+});
 app.get('/api/debug-types/:tmdb_id', async (req, res) => {
   try {
     const tmdbId = req.params.tmdb_id;
