@@ -146,12 +146,53 @@ function getCountryName(code) {
 // Cache duration: 7 days
 const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
+// Search for a show by TMDB ID to get the API's internal ID
+async function searchShowByTmdbId(tmdbId, mediaType) {
+  try {
+    console.log(`🔍 Searching for ${mediaType} with TMDB ID: ${tmdbId}`);
+    
+    const response = await streamingClient.get('/shows/search/filters', {
+      params: {
+        country: 'us', // Use US as base country for search
+        catalogs: 'netflix,prime,disney,hbo,apple,paramount',
+        show_type: mediaType === 'tv' ? 'series' : 'movie',
+        tmdb_id: tmdbId,
+        series_granularity: 'show',
+        output_language: 'fr'
+      }
+    });
+
+    if (response.data && response.data.shows && response.data.shows.length > 0) {
+      const show = response.data.shows[0];
+      console.log(`✅ Found ${mediaType}: "${show.title}" (API ID: ${show.id})`);
+      return show.id; // Return the API's internal ID
+    }
+    
+    console.log(`❌ No ${mediaType} found with TMDB ID ${tmdbId}`);
+    return null;
+  } catch (error) {
+    console.error('Search error:', error.response?.data || error.message);
+    return null;
+  }
+}
+
 // Fetch streaming availability from Streaming Availability API
 async function fetchStreamingAvailability(tmdbId, mediaType = 'movie') {
   try {
+    let apiId = tmdbId;
+    
+    // For TV series, we need to search first to get the API's internal ID
+    if (mediaType === 'tv') {
+      apiId = await searchShowByTmdbId(tmdbId, mediaType);
+      if (!apiId) {
+        console.log(`⚠️ Could not find API ID for TMDB ID ${tmdbId}`);
+        return null;
+      }
+    }
+    
     // Use correct endpoint based on media type
     const showType = mediaType === 'tv' ? 'series' : 'movie';
-    const endpoint = `/shows/${showType}/${tmdbId}`;
+    const endpoint = `/shows/${showType}/${apiId}`;
     
     console.log(`📡 Fetching ${mediaType} data: ${endpoint}`);
     
@@ -165,7 +206,7 @@ async function fetchStreamingAvailability(tmdbId, mediaType = 'movie') {
     return response.data;
   } catch (error) {
     if (error.response?.status === 404) {
-      console.log(`ℹ️ No streaming data found for ${mediaType} TMDB ID ${tmdbId}`);
+      console.log(`ℹ️ No streaming data found for ${mediaType} ID ${tmdbId}`);
       return null;
     }
     console.error('Streaming Availability API error:', error.response?.data || error.message);
@@ -485,12 +526,29 @@ app.get('/api/debug-series/:tmdb_id', async (req, res) => {
   try {
     const tmdb_id = parseInt(req.params.tmdb_id);
     
-    console.log(`🔍 Fetching series data for TMDB ID: ${tmdb_id}`);
+    console.log(`🔍 DEBUG: Fetching series data for TMDB ID: ${tmdb_id}`);
     
+    // Step 1: Search for API ID
+    const apiId = await searchShowByTmdbId(tmdb_id, 'tv');
+    
+    if (!apiId) {
+      return res.json({ 
+        error: 'Could not find series in API',
+        tmdb_id,
+        step: 'search_failed'
+      });
+    }
+    
+    // Step 2: Get streaming data
     const streamingData = await fetchStreamingAvailability(tmdb_id, 'tv');
     
     if (!streamingData) {
-      return res.json({ error: 'No streaming data found' });
+      return res.json({ 
+        error: 'No streaming data found',
+        tmdb_id,
+        api_id: apiId,
+        step: 'fetch_failed'
+      });
     }
     
     // Return first few options to see structure
@@ -506,21 +564,24 @@ app.get('/api/debug-series/:tmdb_id', async (req, res) => {
           platform: option.service?.name,
           type: option.type,
           seasons: option.seasons,
-          full_option: option
+          has_seasons_array: Array.isArray(option.seasons),
+          seasons_length: option.seasons?.length || 0
         });
         if (sampleOptions.length >= 5) break;
       }
     }
     
     res.json({
+      success: true,
       tmdb_id,
+      api_id: apiId,
       total_countries: Object.keys(streamingOptions).length,
       sample_options: sampleOptions,
-      note: "Look at 'seasons' field to see how they're structured"
+      note: "If seasons is an array, we'll create one entry per season"
     });
   } catch (error) {
     console.error('Debug series error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, stack: error.stack });
   }
 });
 
