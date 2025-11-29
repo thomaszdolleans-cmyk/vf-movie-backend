@@ -187,15 +187,28 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
       if (!option || !option.service) continue;
 
       const platformKey = option.service.id;
+      // Always use the main service name, never the addon name
       const platformName = PLATFORMS[platformKey] || option.service.name || platformKey;
       
       // Get streaming type (subscription, rent, buy, free, addon)
       const streamingType = option.type || 'subscription';
       
-      // Get addon name if type is addon
+      // Get addon name if type is addon (this is the channel/addon name, not the platform)
       const addonName = streamingType === 'addon' && option.addon?.name 
         ? option.addon.name 
         : null;
+      
+      // Debug logging for addons
+      if (streamingType === 'addon' && availabilities.length < 3) {
+        console.log(`🔍 ADDON DEBUG:`, {
+          platformKey,
+          platformName,
+          addonName,
+          serviceId: option.service.id,
+          serviceName: option.service.name,
+          addonFullName: option.addon?.name
+        });
+      }
 
       // Check for French audio and subtitles with improved detection
       const hasFrenchAudio = option.audios?.some(a => {
