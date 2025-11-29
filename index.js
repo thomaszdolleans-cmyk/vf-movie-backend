@@ -531,6 +531,64 @@ app.get('/api/debug-subtitles/:tmdb_id', async (req, res) => {
   }
 });
 
+// DEBUG ENDPOINT - Check streaming types (subscription vs VOD)
+app.get('/api/debug-types/:tmdb_id', async (req, res) => {
+  try {
+    const tmdbId = req.params.tmdb_id;
+    
+    console.log(`🔍 Debug: Fetching streaming types for TMDB ID ${tmdbId}`);
+    
+    const response = await streamingClient.get(`/shows/movie/${tmdbId}`, {
+      params: {
+        series_granularity: 'show',
+        output_language: 'fr'
+      }
+    });
+
+    const typesSummary = {
+      subscription: 0,
+      rent: 0,
+      buy: 0,
+      free: 0,
+      addon: 0,
+      unknown: 0,
+      samples: []
+    };
+    
+    if (response.data.streamingOptions) {
+      for (const [country, options] of Object.entries(response.data.streamingOptions)) {
+        for (const option of options) {
+          const type = option.type || 'unknown';
+          typesSummary[type] = (typesSummary[type] || 0) + 1;
+          
+          if (typesSummary.samples.length < 10) {
+            typesSummary.samples.push({
+              country,
+              platform: option.service?.name || option.service?.id,
+              type: option.type,
+              hasType: !!option.type,
+              link: option.link
+            });
+          }
+        }
+      }
+    }
+
+    res.json({
+      tmdb_id: tmdbId,
+      total_options: Object.values(response.data.streamingOptions || {}).flat().length,
+      types_breakdown: typesSummary,
+      note: "If 'unknown' is high, the API might not provide 'type' field"
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      details: error.response?.data
+    });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
