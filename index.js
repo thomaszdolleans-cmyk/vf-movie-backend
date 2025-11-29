@@ -144,10 +144,10 @@ function getCountryName(code) {
 const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
 // Fetch streaming availability from Streaming Availability API
-async function fetchStreamingAvailability(imdbId) {
+async function fetchStreamingAvailability(tmdbId) {
   try {
-    // Use the correct v4 endpoint: /shows/movie/{imdb_id}
-    const response = await streamingClient.get(`/shows/movie/${imdbId}`, {
+    // Use TMDB ID format: movie/{tmdb_id}
+    const response = await streamingClient.get(`/shows/movie/${tmdbId}`, {
       params: {
         series_granularity: 'show',
         output_language: 'fr'
@@ -309,14 +309,9 @@ app.get('/api/movie/:id/availability', async (req, res) => {
       }
     }
 
-    // Fetch fresh data
-    if (!movieDetails.imdb_id) {
-      console.log('No IMDB ID available for this movie');
-      return res.json({ availabilities: [] });
-    }
-
-    console.log(`🔍 Fetching streaming data for "${movieDetails.title}" (IMDB: ${movieDetails.imdb_id})`);
-    const streamingData = await fetchStreamingAvailability(movieDetails.imdb_id);
+    // Fetch fresh data using TMDB ID
+    console.log(`🔍 Fetching streaming data for "${movieDetails.title}" (TMDB ID: ${tmdb_id})`);
+    const streamingData = await fetchStreamingAvailability(tmdb_id);
 
     if (!streamingData) {
       return res.json({ availabilities: [] });
@@ -393,10 +388,10 @@ app.get('/api/reset-database', async (req, res) => {
 // TEST ENDPOINT - Test Streaming Availability API
 app.get('/api/test-streaming-api', async (req, res) => {
   try {
-    // Test with Inception (IMDB: tt1375666)
-    const testImdbId = 'tt1375666';
+    // Test with Inception (TMDB ID: 27205)
+    const testTmdbId = '27205';
     
-    console.log(`🧪 Testing Streaming Availability API with IMDB ID: ${testImdbId}`);
+    console.log(`🧪 Testing Streaming Availability API with TMDB ID: ${testTmdbId}`);
     
     // Check if API key is configured
     if (!process.env.RAPIDAPI_KEY) {
@@ -411,7 +406,7 @@ app.get('/api/test-streaming-api', async (req, res) => {
       });
     }
 
-    const response = await streamingClient.get(`/shows/movie/${testImdbId}`, {
+    const response = await streamingClient.get(`/shows/movie/${testTmdbId}`, {
       params: {
         series_granularity: 'show',
         output_language: 'fr'
@@ -434,11 +429,16 @@ app.get('/api/test-streaming-api', async (req, res) => {
     res.json({
       success: true,
       message: 'API is working!',
-      test_movie: 'Inception (tt1375666)',
+      test_movie: `Inception (TMDB ID: ${testTmdbId})`,
       countries_found: platformCount,
       platforms_found: platforms,
       sample_data: response.data.streamingOptions ? Object.keys(response.data.streamingOptions).slice(0, 5) : [],
-      api_key_configured: true
+      api_key_configured: true,
+      full_response_sample: response.data.streamingOptions ? 
+        Object.entries(response.data.streamingOptions).slice(0, 1).map(([country, options]) => ({
+          country,
+          options: options.slice(0, 2)
+        })) : []
     });
 
   } catch (error) {
