@@ -193,17 +193,20 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
       }) || false;
 
       const hasFrenchSubtitles = option.subtitles?.some(s => {
-        const lang = s.language?.toLowerCase();
-        const locale = s.locale?.toLowerCase();
+        if (!s) return false;
+        
+        const lang = s.language ? String(s.language).toLowerCase() : '';
+        const locale = s.locale ? String(s.locale).toLowerCase() : '';
+        
         return lang === 'fra' || lang === 'fr' || lang === 'fre' || 
-               locale?.includes('fr') || locale === 'fr-fr' || locale === 'fr-ca';
+               locale.includes('fr') || locale === 'fr-fr' || locale === 'fr-ca';
       }) || false;
 
       // Debug logging for first few entries to check subtitle data
       if (availabilities.length < 3) {
         console.log(`📊 ${platformName} in ${countryName}:`, {
           audios: option.audios?.map(a => a.language),
-          subtitles: option.subtitles?.map(s => ({ lang: s.language, locale: s.locale })),
+          subtitles: option.subtitles?.map(s => ({ lang: s.language, locale: s.locale, type: typeof s.locale })),
           hasFrenchAudio,
           hasFrenchSubtitles
         });
