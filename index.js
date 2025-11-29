@@ -186,14 +186,28 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
       const platformKey = option.service.id;
       const platformName = PLATFORMS[platformKey] || option.service.name || platformKey;
 
-      // Check for French audio and subtitles
-      const hasFrenchAudio = option.audios?.some(a => 
-        a.language === 'fra' || a.language === 'fr'
-      ) || false;
+      // Check for French audio and subtitles with improved detection
+      const hasFrenchAudio = option.audios?.some(a => {
+        const lang = a.language?.toLowerCase();
+        return lang === 'fra' || lang === 'fr' || lang === 'fre';
+      }) || false;
 
-      const hasFrenchSubtitles = option.subtitles?.some(s => 
-        s.language === 'fra' || s.language === 'fr'  
-      ) || false;
+      const hasFrenchSubtitles = option.subtitles?.some(s => {
+        const lang = s.language?.toLowerCase();
+        const locale = s.locale?.toLowerCase();
+        return lang === 'fra' || lang === 'fr' || lang === 'fre' || 
+               locale?.includes('fr') || locale === 'fr-fr' || locale === 'fr-ca';
+      }) || false;
+
+      // Debug logging for first few entries to check subtitle data
+      if (availabilities.length < 3) {
+        console.log(`📊 ${platformName} in ${countryName}:`, {
+          audios: option.audios?.map(a => a.language),
+          subtitles: option.subtitles?.map(s => ({ lang: s.language, locale: s.locale })),
+          hasFrenchAudio,
+          hasFrenchSubtitles
+        });
+      }
 
       // IMPORTANT: Save ALL options, not just French ones!
       const availability = {
@@ -446,6 +460,52 @@ app.get('/api/test-streaming-api', async (req, res) => {
       error: error.message,
       error_details: error.response?.data,
       api_key_configured: !!process.env.RAPIDAPI_KEY
+    });
+  }
+});
+
+// DEBUG ENDPOINT - Inspect subtitle data for a specific movie
+app.get('/api/debug-subtitles/:tmdb_id', async (req, res) => {
+  try {
+    const tmdbId = req.params.tmdb_id;
+    
+    console.log(`🔍 Debug: Fetching subtitle data for TMDB ID ${tmdbId}`);
+    
+    const response = await streamingClient.get(`/shows/movie/${tmdbId}`, {
+      params: {
+        series_granularity: 'show',
+        output_language: 'fr'
+      }
+    });
+
+    const subtitleData = [];
+    
+    if (response.data.streamingOptions) {
+      for (const [country, options] of Object.entries(response.data.streamingOptions)) {
+        for (const option of options) {
+          if (option.subtitles && option.subtitles.length > 0) {
+            subtitleData.push({
+              country,
+              platform: option.service?.name,
+              subtitles: option.subtitles,
+              audios: option.audios
+            });
+          }
+        }
+      }
+    }
+
+    res.json({
+      tmdb_id: tmdbId,
+      total_options: Object.values(response.data.streamingOptions || {}).flat().length,
+      options_with_subtitles: subtitleData.length,
+      subtitle_samples: subtitleData.slice(0, 10)
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      details: error.response?.data
     });
   }
 });
