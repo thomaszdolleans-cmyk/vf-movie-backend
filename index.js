@@ -355,7 +355,18 @@ app.get('/api/movie/:id/availability', async (req, res) => {
           [tmdb_id]
         );
 
-        return res.json({ availabilities: cached.rows });
+        return res.json({ 
+          availabilities: cached.rows,
+          movie: {
+            title: movieDetails.title,
+            original_title: movieDetails.original_title,
+            year: movieDetails.release_date ? new Date(movieDetails.release_date).getFullYear() : null,
+            poster: movieDetails.poster_path ? `https://image.tmdb.org/t/p/w500${movieDetails.poster_path}` : null,
+            backdrop: movieDetails.backdrop_path ? `https://image.tmdb.org/t/p/w1280${movieDetails.backdrop_path}` : null,
+            vote_average: movieDetails.vote_average,
+            overview: movieDetails.overview
+          }
+        });
       } else {
         console.log(`⏰ Cache expired (${Math.round(cacheAge / (1000 * 60 * 60 * 24))} days old), fetching fresh data...`);
       }
@@ -366,11 +377,33 @@ app.get('/api/movie/:id/availability', async (req, res) => {
     const streamingData = await fetchStreamingAvailability(tmdb_id);
 
     if (!streamingData) {
-      return res.json({ availabilities: [] });
+      return res.json({ 
+        availabilities: [],
+        movie: {
+          title: movieDetails.title,
+          original_title: movieDetails.original_title,
+          year: movieDetails.release_date ? new Date(movieDetails.release_date).getFullYear() : null,
+          poster: movieDetails.poster_path ? `https://image.tmdb.org/t/p/w500${movieDetails.poster_path}` : null,
+          backdrop: movieDetails.backdrop_path ? `https://image.tmdb.org/t/p/w1280${movieDetails.backdrop_path}` : null,
+          vote_average: movieDetails.vote_average,
+          overview: movieDetails.overview
+        }
+      });
     }
 
     const availabilities = await processAndCacheStreaming(tmdb_id, streamingData);
-    res.json({ availabilities });
+    res.json({ 
+      availabilities,
+      movie: {
+        title: movieDetails.title,
+        original_title: movieDetails.original_title,
+        year: movieDetails.release_date ? new Date(movieDetails.release_date).getFullYear() : null,
+        poster: movieDetails.poster_path ? `https://image.tmdb.org/t/p/w500${movieDetails.poster_path}` : null,
+        backdrop: movieDetails.backdrop_path ? `https://image.tmdb.org/t/p/w1280${movieDetails.backdrop_path}` : null,
+        vote_average: movieDetails.vote_average,
+        overview: movieDetails.overview
+      }
+    });
 
   } catch (error) {
     console.error('Availability error:', error);
