@@ -198,6 +198,16 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
         ? option.addon.name 
         : null;
       
+      // FILTER: Skip Prime addons except Starz and MGM
+      if (platformKey === 'prime' && streamingType === 'addon') {
+        const allowedPrimeAddons = ['Starz', 'MGM+', 'MGM Plus', 'MGM', 'STARZ'];
+        if (!addonName || !allowedPrimeAddons.some(allowed => addonName.toLowerCase().includes(allowed.toLowerCase()))) {
+          console.log(`⏭️ Skipping Prime addon: ${addonName || 'unknown'} (not Starz or MGM)`);
+          continue; // Skip this option
+        }
+        console.log(`✅ Keeping Prime addon: ${addonName} (Starz or MGM)`);
+      }
+      
       // Debug logging for addons
       if (streamingType === 'addon' && availabilities.length < 3) {
         console.log(`🔍 ADDON DEBUG:`, {
