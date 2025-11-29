@@ -195,44 +195,42 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
         s.language === 'fra' || s.language === 'fr'  
       ) || false;
 
-      // Only include if has French audio OR French subtitles
-      if (hasFrenchAudio || hasFrenchSubtitles) {
-        const availability = {
-          tmdb_id: tmdbId,
-          platform: platformName,
-          country_code: country,
-          country_name: countryName,
-          has_french_audio: hasFrenchAudio,
-          has_french_subtitles: hasFrenchSubtitles,
-          streaming_url: option.link || null,
-          quality: option.quality || 'hd'
-        };
+      // IMPORTANT: Save ALL options, not just French ones!
+      const availability = {
+        tmdb_id: tmdbId,
+        platform: platformName,
+        country_code: country,
+        country_name: countryName,
+        has_french_audio: hasFrenchAudio,
+        has_french_subtitles: hasFrenchSubtitles,
+        streaming_url: option.link || null,
+        quality: option.quality || 'hd'
+      };
 
-        // Insert into database
-        try {
-          await pool.query(
-            `INSERT INTO availabilities 
-            (tmdb_id, platform, country_code, country_name, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
-            ON CONFLICT (tmdb_id, platform, country_code) 
-            DO UPDATE SET 
-              has_french_audio = $5,
-              has_french_subtitles = $6,
-              streaming_url = $7,
-              quality = $8,
-              updated_at = CURRENT_TIMESTAMP`,
-            [tmdbId, platformName, country, countryName, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
-          );
+      // Insert into database
+      try {
+        await pool.query(
+          `INSERT INTO availabilities 
+          (tmdb_id, platform, country_code, country_name, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
+          ON CONFLICT (tmdb_id, platform, country_code) 
+          DO UPDATE SET 
+            has_french_audio = $5,
+            has_french_subtitles = $6,
+            streaming_url = $7,
+            quality = $8,
+            updated_at = CURRENT_TIMESTAMP`,
+          [tmdbId, platformName, country, countryName, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
+        );
 
-          availabilities.push(availability);
-        } catch (dbError) {
-          console.error('Database insert error:', dbError);
-        }
+        availabilities.push(availability);
+      } catch (dbError) {
+        console.error('Database insert error:', dbError);
       }
     }
   }
 
-  console.log(`✅ Cached ${availabilities.length} availabilities for TMDB ID ${tmdbId}`);
+  console.log(`✅ Cached ${availabilities.length} availabilities for TMDB ID ${tmdbId} (${availabilities.filter(a => a.has_french_audio || a.has_french_subtitles).length} with French content)`);
   return availabilities;
 }
 
