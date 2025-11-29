@@ -254,63 +254,66 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
         continue; // Skip this option - we only want French content
       }
 
-      // Extract season number for TV series
-      const seasonNumber = mediaType === 'tv' && option.seasons && option.seasons.length > 0
-        ? option.seasons[0] // For now, take first season (we'll handle multiple seasons later)
-        : null;
+      // For TV series, we need to handle seasons
+      const seasons = mediaType === 'tv' && option.seasons && Array.isArray(option.seasons) 
+        ? option.seasons 
+        : [null]; // For movies or if no seasons, use null
 
-      // Debug logging for first few entries to check subtitle data
-      if (availabilities.length < 5) {
-        console.log(`📊 ${platformName} (${streamingType}${addonName ? ` - ${addonName}` : ''}) in ${countryName}${seasonNumber ? ` - Season ${seasonNumber}` : ''}:`, {
-          audios: option.audios?.map(a => a.language),
-          subtitles: option.subtitles?.map(s => ({ 
-            lang: s.language, 
-            localeLanguage: s.locale?.language,
-            closedCaptions: s.closedCaptions 
-          })),
-          hasFrenchAudio,
-          hasFrenchSubtitles,
-          type: streamingType,
-          addon: addonName,
-          quality: option.quality,
-          seasons: option.seasons
-        });
-      }
+      // Create an entry for EACH season (or one entry for movies)
+      for (const seasonNumber of seasons) {
+        // Debug logging for first few entries
+        if (availabilities.length < 5) {
+          console.log(`📊 ${platformName} (${streamingType}${addonName ? ` - ${addonName}` : ''}) in ${countryName}${seasonNumber ? ` - Season ${seasonNumber}` : ''}:`, {
+            audios: option.audios?.map(a => a.language),
+            subtitles: option.subtitles?.map(s => ({ 
+              lang: s.language, 
+              localeLanguage: s.locale?.language,
+              closedCaptions: s.closedCaptions 
+            })),
+            hasFrenchAudio,
+            hasFrenchSubtitles,
+            type: streamingType,
+            addon: addonName,
+            quality: option.quality,
+            season: seasonNumber,
+            allSeasons: seasons
+          });
+        }
 
-      // IMPORTANT: Save ALL options, not just French ones!
-      const availability = {
-        tmdb_id: tmdbId,
-        media_type: mediaType,
-        platform: platformName,
-        country_code: country,
-        country_name: countryName,
-        streaming_type: streamingType,
-        addon_name: addonName,
-        season_number: seasonNumber,
-        has_french_audio: hasFrenchAudio,
-        has_french_subtitles: hasFrenchSubtitles,
-        streaming_url: option.link || null,
-        quality: option.quality || 'hd'
-      };
+        const availability = {
+          tmdb_id: tmdbId,
+          media_type: mediaType,
+          platform: platformName,
+          country_code: country,
+          country_name: countryName,
+          streaming_type: streamingType,
+          addon_name: addonName,
+          season_number: seasonNumber,
+          has_french_audio: hasFrenchAudio,
+          has_french_subtitles: hasFrenchSubtitles,
+          streaming_url: option.link || null,
+          quality: option.quality || 'hd'
+        };
 
-      // Insert into database
-      try {
-        await pool.query(
-          `INSERT INTO availabilities 
-          (tmdb_id, media_type, platform, country_code, country_name, streaming_type, addon_name, season_number, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)
-          ON CONFLICT (tmdb_id, media_type, platform, country_code, streaming_type, addon_name, quality, season_number) 
-          DO UPDATE SET 
-            has_french_audio = $9,
-            has_french_subtitles = $10,
-            streaming_url = $11,
-            updated_at = CURRENT_TIMESTAMP`,
-          [tmdbId, mediaType, platformName, country, countryName, streamingType, addonName, seasonNumber, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
-        );
+        // Insert into database
+        try {
+          await pool.query(
+            `INSERT INTO availabilities 
+            (tmdb_id, media_type, platform, country_code, country_name, streaming_type, addon_name, season_number, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)
+            ON CONFLICT (tmdb_id, media_type, platform, country_code, streaming_type, addon_name, quality, season_number) 
+            DO UPDATE SET 
+              has_french_audio = $9,
+              has_french_subtitles = $10,
+              streaming_url = $11,
+              updated_at = CURRENT_TIMESTAMP`,
+            [tmdbId, mediaType, platformName, country, countryName, streamingType, addonName, seasonNumber, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
+          );
 
-        availabilities.push(availability);
-      } catch (dbError) {
-        console.error('Database insert error:', dbError);
+          availabilities.push(availability);
+        } catch (dbError) {
+          console.error('Database insert error:', dbError);
+        }
       }
     }
   }
@@ -475,6 +478,50 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
 // Backwards compatibility: redirect old movie endpoint to new media endpoint
 app.get('/api/movie/:id/availability', async (req, res) => {
   return res.redirect(308, `/api/media/movie/${req.params.id}/availability`);
+});
+
+// Debug endpoint - check series structure
+app.get('/api/debug-series/:tmdb_id', async (req, res) => {
+  try {
+    const tmdb_id = parseInt(req.params.tmdb_id);
+    
+    console.log(`🔍 Fetching series data for TMDB ID: ${tmdb_id}`);
+    
+    const streamingData = await fetchStreamingAvailability(tmdb_id, 'tv');
+    
+    if (!streamingData) {
+      return res.json({ error: 'No streaming data found' });
+    }
+    
+    // Return first few options to see structure
+    const sampleOptions = [];
+    const streamingOptions = streamingData.streamingOptions || {};
+    
+    for (const [country, options] of Object.entries(streamingOptions)) {
+      if (sampleOptions.length >= 5) break;
+      
+      for (const option of options.slice(0, 2)) {
+        sampleOptions.push({
+          country,
+          platform: option.service?.name,
+          type: option.type,
+          seasons: option.seasons,
+          full_option: option
+        });
+        if (sampleOptions.length >= 5) break;
+      }
+    }
+    
+    res.json({
+      tmdb_id,
+      total_countries: Object.keys(streamingOptions).length,
+      sample_options: sampleOptions,
+      note: "Look at 'seasons' field to see how they're structured"
+    });
+  } catch (error) {
+    console.error('Debug series error:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Debug endpoint - check duplicates
