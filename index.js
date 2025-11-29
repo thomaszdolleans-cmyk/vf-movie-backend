@@ -350,6 +350,45 @@ app.get('/api/clear-cache/:tmdb_id', async (req, res) => {
   }
 });
 
+// RESET DATABASE ENDPOINT (for fixing table structure)
+app.get('/api/reset-database', async (req, res) => {
+  try {
+    console.log('🔄 Dropping old table...');
+    await pool.query('DROP TABLE IF EXISTS availabilities');
+    console.log('✅ Old table dropped!');
+    
+    console.log('🔨 Creating new table with correct structure...');
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS availabilities (
+        id SERIAL PRIMARY KEY,
+        tmdb_id INTEGER NOT NULL,
+        platform VARCHAR(50) NOT NULL,
+        country_code VARCHAR(10) NOT NULL,
+        country_name VARCHAR(100) NOT NULL,
+        has_french_audio BOOLEAN DEFAULT false,
+        has_french_subtitles BOOLEAN DEFAULT false,
+        streaming_url TEXT,
+        quality VARCHAR(20),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(tmdb_id, platform, country_code)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tmdb_platform ON availabilities(tmdb_id, platform);
+      CREATE INDEX IF NOT EXISTS idx_updated_at ON availabilities(updated_at);
+    `);
+    
+    console.log('✅ New table created successfully!');
+    res.json({ 
+      success: true, 
+      message: 'Database reset successfully! Table recreated with new structure. You can now search for movies.' 
+    });
+  } catch (error) {
+    console.error('❌ Reset error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
