@@ -267,12 +267,11 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
           `INSERT INTO availabilities 
           (tmdb_id, platform, country_code, country_name, streaming_type, addon_name, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
-          ON CONFLICT (tmdb_id, platform, country_code, streaming_type, addon_name) 
+          ON CONFLICT (tmdb_id, platform, country_code, streaming_type, addon_name, quality) 
           DO UPDATE SET 
             has_french_audio = $7,
             has_french_subtitles = $8,
             streaming_url = $9,
-            quality = $10,
             updated_at = CURRENT_TIMESTAMP`,
           [tmdbId, platformName, country, countryName, streamingType, addonName, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
         );
@@ -411,6 +410,52 @@ app.get('/api/movie/:id/availability', async (req, res) => {
   }
 });
 
+// Debug endpoint - check duplicates
+app.get('/api/debug-duplicates/:tmdb_id', async (req, res) => {
+  try {
+    const tmdb_id = parseInt(req.params.tmdb_id);
+    
+    // Get all entries for this movie
+    const result = await pool.query(
+      `SELECT tmdb_id, platform, country_code, country_name, streaming_type, addon_name, 
+              quality, has_french_audio, has_french_subtitles, streaming_url, 
+              created_at, updated_at
+       FROM availabilities 
+       WHERE tmdb_id = $1 
+       ORDER BY country_code, platform, streaming_type, addon_name`,
+      [tmdb_id]
+    );
+    
+    // Find duplicates (same country, platform, type, addon)
+    const seen = new Map();
+    const duplicates = [];
+    
+    result.rows.forEach(row => {
+      const key = `${row.country_code}-${row.platform}-${row.streaming_type}-${row.addon_name}`;
+      if (seen.has(key)) {
+        duplicates.push({
+          key,
+          first: seen.get(key),
+          duplicate: row
+        });
+      } else {
+        seen.set(key, row);
+      }
+    });
+    
+    res.json({
+      total_entries: result.rows.length,
+      unique_keys: seen.size,
+      duplicates_found: duplicates.length,
+      duplicates: duplicates,
+      sample_entries: result.rows.slice(0, 10)
+    });
+  } catch (error) {
+    console.error('Debug duplicates error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Clear all cache
 app.get('/api/clear-all-cache', async (req, res) => {
   try {
@@ -454,7 +499,7 @@ app.get('/api/reset-database', async (req, res) => {
         quality VARCHAR(20),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(tmdb_id, platform, country_code, streaming_type, addon_name)
+        UNIQUE(tmdb_id, platform, country_code, streaming_type, addon_name, quality)
       );
 
       CREATE INDEX IF NOT EXISTS idx_tmdb_platform ON availabilities(tmdb_id, platform);
