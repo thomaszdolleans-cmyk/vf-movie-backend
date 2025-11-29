@@ -25,17 +25,19 @@ pool.query(`
     platform VARCHAR(50) NOT NULL,
     country_code VARCHAR(10) NOT NULL,
     country_name VARCHAR(100) NOT NULL,
+    streaming_type VARCHAR(20) NOT NULL DEFAULT 'subscription',
     has_french_audio BOOLEAN DEFAULT false,
     has_french_subtitles BOOLEAN DEFAULT false,
     streaming_url TEXT,
     quality VARCHAR(20),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(tmdb_id, platform, country_code)
+    UNIQUE(tmdb_id, platform, country_code, streaming_type)
   );
 
   CREATE INDEX IF NOT EXISTS idx_tmdb_platform ON availabilities(tmdb_id, platform);
   CREATE INDEX IF NOT EXISTS idx_updated_at ON availabilities(updated_at);
+  CREATE INDEX IF NOT EXISTS idx_streaming_type ON availabilities(streaming_type);
 `).catch(err => console.error('Database initialization error:', err));
 
 // TMDB API client
@@ -185,6 +187,9 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
 
       const platformKey = option.service.id;
       const platformName = PLATFORMS[platformKey] || option.service.name || platformKey;
+      
+      // Get streaming type (subscription, rent, buy, free, addon)
+      const streamingType = option.type || 'subscription';
 
       // Check for French audio and subtitles with improved detection
       const hasFrenchAudio = option.audios?.some(a => {
@@ -195,20 +200,30 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
       const hasFrenchSubtitles = option.subtitles?.some(s => {
         if (!s) return false;
         
+        // Handle language (direct string)
         const lang = s.language ? String(s.language).toLowerCase() : '';
-        const locale = s.locale ? String(s.locale).toLowerCase() : '';
         
+        // Handle locale (object with language property)
+        const localeLanguage = s.locale?.language ? String(s.locale.language).toLowerCase() : '';
+        
+        // Check both language and locale.language for French
         return lang === 'fra' || lang === 'fr' || lang === 'fre' || 
-               locale.includes('fr') || locale === 'fr-fr' || locale === 'fr-ca';
+               localeLanguage === 'fra' || localeLanguage === 'fr' || localeLanguage === 'fre';
       }) || false;
 
       // Debug logging for first few entries to check subtitle data
-      if (availabilities.length < 3) {
-        console.log(`📊 ${platformName} in ${countryName}:`, {
+      if (availabilities.length < 5) {
+        console.log(`📊 ${platformName} (${streamingType}) in ${countryName}:`, {
           audios: option.audios?.map(a => a.language),
-          subtitles: option.subtitles?.map(s => ({ lang: s.language, locale: s.locale, type: typeof s.locale })),
+          subtitles: option.subtitles?.map(s => ({ 
+            lang: s.language, 
+            localeLanguage: s.locale?.language,
+            closedCaptions: s.closedCaptions 
+          })),
           hasFrenchAudio,
-          hasFrenchSubtitles
+          hasFrenchSubtitles,
+          type: streamingType,
+          quality: option.quality
         });
       }
 
@@ -218,6 +233,7 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
         platform: platformName,
         country_code: country,
         country_name: countryName,
+        streaming_type: streamingType,
         has_french_audio: hasFrenchAudio,
         has_french_subtitles: hasFrenchSubtitles,
         streaming_url: option.link || null,
@@ -228,16 +244,16 @@ async function processAndCacheStreaming(tmdbId, streamingData) {
       try {
         await pool.query(
           `INSERT INTO availabilities 
-          (tmdb_id, platform, country_code, country_name, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
-          ON CONFLICT (tmdb_id, platform, country_code) 
+          (tmdb_id, platform, country_code, country_name, streaming_type, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+          ON CONFLICT (tmdb_id, platform, country_code, streaming_type) 
           DO UPDATE SET 
-            has_french_audio = $5,
-            has_french_subtitles = $6,
-            streaming_url = $7,
-            quality = $8,
+            has_french_audio = $6,
+            has_french_subtitles = $7,
+            streaming_url = $8,
+            quality = $9,
             updated_at = CURRENT_TIMESTAMP`,
-          [tmdbId, platformName, country, countryName, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
+          [tmdbId, platformName, country, countryName, streamingType, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
         );
 
         availabilities.push(availability);
@@ -376,23 +392,25 @@ app.get('/api/reset-database', async (req, res) => {
         platform VARCHAR(50) NOT NULL,
         country_code VARCHAR(10) NOT NULL,
         country_name VARCHAR(100) NOT NULL,
+        streaming_type VARCHAR(20) NOT NULL DEFAULT 'subscription',
         has_french_audio BOOLEAN DEFAULT false,
         has_french_subtitles BOOLEAN DEFAULT false,
         streaming_url TEXT,
         quality VARCHAR(20),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(tmdb_id, platform, country_code)
+        UNIQUE(tmdb_id, platform, country_code, streaming_type)
       );
 
       CREATE INDEX IF NOT EXISTS idx_tmdb_platform ON availabilities(tmdb_id, platform);
       CREATE INDEX IF NOT EXISTS idx_updated_at ON availabilities(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_streaming_type ON availabilities(streaming_type);
     `);
     
-    console.log('✅ New table created successfully!');
+    console.log('✅ New table created successfully with streaming_type support!');
     res.json({ 
       success: true, 
-      message: 'Database reset successfully! Table recreated with new structure. You can now search for movies.' 
+      message: 'Database reset successfully! Table recreated with streaming_type column for VOD support.' 
     });
   } catch (error) {
     console.error('❌ Reset error:', error);
