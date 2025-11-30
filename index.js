@@ -739,6 +739,78 @@ app.get('/api/debug-series/:tmdb_id', async (req, res) => {
   }
 });
 
+// Test endpoint - try different series endpoint formats
+app.get('/api/test-series-endpoints/:tmdb_id', async (req, res) => {
+  try {
+    const tmdb_id = req.params.tmdb_id;
+    const results = {};
+    
+    // Test 1: /shows/tv/{tmdb_id} (like movies but tv)
+    try {
+      console.log(`Test 1: /shows/tv/${tmdb_id}`);
+      const r1 = await streamingClient.get(`/shows/tv/${tmdb_id}`, {
+        params: { output_language: 'fr', series_granularity: 'show' }
+      });
+      results.test1_shows_tv = {
+        success: true,
+        countries: r1.data.streamingOptions ? Object.keys(r1.data.streamingOptions).length : 0
+      };
+    } catch (e) {
+      results.test1_shows_tv = { success: false, error: e.response?.status || e.message };
+    }
+    
+    // Test 2: /shows/series/tv/{tmdb_id}
+    try {
+      console.log(`Test 2: /shows/series/tv/${tmdb_id}`);
+      const r2 = await streamingClient.get(`/shows/series/tv/${tmdb_id}`, {
+        params: { output_language: 'fr', series_granularity: 'show' }
+      });
+      results.test2_shows_series_tv = {
+        success: true,
+        countries: r2.data.streamingOptions ? Object.keys(r2.data.streamingOptions).length : 0
+      };
+    } catch (e) {
+      results.test2_shows_series_tv = { success: false, error: e.response?.status || e.message };
+    }
+    
+    // Test 3: /shows/{tmdb_id} with type param
+    try {
+      console.log(`Test 3: /shows/${tmdb_id}`);
+      const r3 = await streamingClient.get(`/shows/${tmdb_id}`, {
+        params: { output_language: 'fr', series_granularity: 'show', show_type: 'series' }
+      });
+      results.test3_shows_with_type = {
+        success: true,
+        countries: r3.data.streamingOptions ? Object.keys(r3.data.streamingOptions).length : 0
+      };
+    } catch (e) {
+      results.test3_shows_with_type = { success: false, error: e.response?.status || e.message };
+    }
+    
+    // Test 4: /shows/series/{tmdb_id} (direct number)
+    try {
+      console.log(`Test 4: /shows/series/${tmdb_id}`);
+      const r4 = await streamingClient.get(`/shows/series/${tmdb_id}`, {
+        params: { output_language: 'fr', series_granularity: 'show' }
+      });
+      results.test4_shows_series_number = {
+        success: true,
+        countries: r4.data.streamingOptions ? Object.keys(r4.data.streamingOptions).length : 0
+      };
+    } catch (e) {
+      results.test4_shows_series_number = { success: false, error: e.response?.status || e.message };
+    }
+    
+    res.json({
+      tmdb_id,
+      results,
+      note: "Testing different endpoint formats to find one that works like /shows/movie/{id}"
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Test endpoint - try fetching series directly with API ID
 app.get('/api/test-series-direct/:api_id', async (req, res) => {
   try {
