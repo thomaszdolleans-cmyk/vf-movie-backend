@@ -151,28 +151,47 @@ async function searchShowByTitle(title, year, mediaType) {
   try {
     console.log(`🔍 Searching for ${mediaType} by title: "${title}" (${year})`);
     
-    const response = await streamingClient.get('/shows/search/title', {
+    // Try /shows/search/filters - might support all countries
+    const response = await streamingClient.get('/shows/search/filters', {
       params: {
-        title: title,
-        country: 'fr', // Use France as search country - better for French content!
+        // Don't specify country - see if this returns all countries
+        catalogs: 'netflix,prime,disney,hbo,apple,paramount,hulu,peacock',
         show_type: mediaType === 'tv' ? 'series' : 'movie',
         series_granularity: 'show',
         output_language: 'fr'
       }
     });
 
-    if (response.data && response.data.length > 0) {
-      // Find the best match by comparing year
-      let bestMatch = response.data[0];
+    const shows = response.data?.shows || [];
+    
+    if (shows.length > 0) {
+      // Find show matching the title and year
+      let bestMatch = null;
       
-      if (year) {
-        for (const show of response.data) {
+      for (const show of shows) {
+        // Check if title matches (case insensitive)
+        const showTitle = show.title.toLowerCase();
+        const searchTitle = title.toLowerCase();
+        
+        if (showTitle === searchTitle || showTitle.includes(searchTitle) || searchTitle.includes(showTitle)) {
           const showYear = show.firstAirYear || show.releaseYear;
-          if (showYear === year) {
+          
+          // If year matches or no year to compare
+          if (!year || showYear === year) {
             bestMatch = show;
             break;
           }
+          
+          // Keep as fallback if no exact year match
+          if (!bestMatch) {
+            bestMatch = show;
+          }
         }
+      }
+      
+      if (!bestMatch) {
+        // No title match found, use first result
+        bestMatch = shows[0];
       }
       
       const countriesCount = bestMatch.streamingOptions ? Object.keys(bestMatch.streamingOptions).length : 0;
@@ -186,7 +205,7 @@ async function searchShowByTitle(title, year, mediaType) {
     console.log(`❌ No ${mediaType} found with title "${title}"`);
     return null;
   } catch (error) {
-    console.error('Search by title error:', error.response?.data || error.message);
+    console.error('Search by filters error:', error.response?.data || error.message);
     return null;
   }
 }
@@ -573,18 +592,17 @@ app.get('/api/debug-search/:tmdb_id', async (req, res) => {
     
     console.log(`📺 Series from TMDB: "${title}" (${year})`);
     
-    // Now search by title in Streaming Availability API
-    const response = await streamingClient.get('/shows/search/title', {
+    // Try filters endpoint without country
+    const response = await streamingClient.get('/shows/search/filters', {
       params: {
-        title: title,
-        country: 'fr', // Use France - better for French content!
+        catalogs: 'netflix,prime,disney,hbo,apple,paramount,hulu,peacock',
         show_type: 'series',
         series_granularity: 'show',
         output_language: 'fr'
       }
     });
 
-    const shows = response.data || [];
+    const shows = response.data?.shows || [];
     
     if (shows.length === 0) {
       return res.json({
