@@ -154,7 +154,7 @@ async function searchShowByTitle(title, year, mediaType) {
     const response = await streamingClient.get('/shows/search/title', {
       params: {
         title: title,
-        // Don't specify country - we want results from ALL countries!
+        country: 'fr', // Use France as search country - better for French content!
         show_type: mediaType === 'tv' ? 'series' : 'movie',
         series_granularity: 'show',
         output_language: 'fr'
@@ -577,7 +577,7 @@ app.get('/api/debug-search/:tmdb_id', async (req, res) => {
     const response = await streamingClient.get('/shows/search/title', {
       params: {
         title: title,
-        // Don't specify country - we want ALL countries!
+        country: 'fr', // Use France - better for French content!
         show_type: 'series',
         series_granularity: 'show',
         output_language: 'fr'
@@ -717,6 +717,40 @@ app.get('/api/debug-series/:tmdb_id', async (req, res) => {
       error: error.message, 
       stack: error.stack,
       response_data: error.response?.data 
+    });
+  }
+});
+
+// Test endpoint - try fetching series directly with API ID
+app.get('/api/test-series-direct/:api_id', async (req, res) => {
+  try {
+    const api_id = req.params.api_id;
+    
+    console.log(`🧪 Testing direct series fetch with API ID: ${api_id}`);
+    
+    const response = await streamingClient.get(`/shows/series/${api_id}`, {
+      params: {
+        series_granularity: 'show',
+        output_language: 'fr'
+      }
+    });
+    
+    const data = response.data;
+    const countriesCount = data.streamingOptions ? Object.keys(data.streamingOptions).length : 0;
+    
+    res.json({
+      success: true,
+      api_id,
+      title: data.title,
+      total_countries: countriesCount,
+      countries: data.streamingOptions ? Object.keys(data.streamingOptions) : [],
+      note: "If this works, we can use direct fetch instead of search!"
+    });
+  } catch (error) {
+    res.status(error.response?.status || 500).json({
+      error: error.message,
+      status: error.response?.status,
+      data: error.response?.data
     });
   }
 });
