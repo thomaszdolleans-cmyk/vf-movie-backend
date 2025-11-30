@@ -213,50 +213,24 @@ async function searchShowByTitle(title, year, mediaType) {
 // Fetch streaming availability from Streaming Availability API
 async function fetchStreamingAvailability(tmdbId, mediaType = 'movie', mediaDetails = null) {
   try {
-    // For TV series, we need to search by title because TMDB ID search doesn't work
-    if (mediaType === 'tv') {
-      // Get title and year from mediaDetails (passed from endpoint)
-      const title = mediaDetails?.name || mediaDetails?.title;
-      const year = mediaDetails?.first_air_date 
-        ? new Date(mediaDetails.first_air_date).getFullYear() 
-        : null;
-      
-      if (!title) {
-        console.log(`⚠️ No title provided for TMDB ID ${tmdbId}`);
-        return null;
-      }
-      
-      console.log(`📺 Searching for TV series: "${title}" (${year})`);
-      
-      const searchResult = await searchShowByTitle(title, year, mediaType);
-      
-      if (!searchResult) {
-        console.log(`⚠️ Could not find series "${title}" in API`);
-        return null;
-      }
-      
-      // Search result already contains streamingOptions!
-      if (searchResult.streamingOptions && Object.keys(searchResult.streamingOptions).length > 0) {
-        console.log(`✅ Using streamingOptions from search (${Object.keys(searchResult.streamingOptions).length} countries)`);
-        return searchResult;
-      }
-      
-      console.log(`⚠️ No streamingOptions in search result for "${title}"`);
-      return null;
-    }
+    // Use the correct endpoint based on media type
+    // For movies: /shows/movie/{tmdb_id}
+    // For TV series: /shows/tv/{tmdb_id}
+    const showType = mediaType === 'tv' ? 'tv' : 'movie';
+    const endpoint = `/shows/${showType}/${tmdbId}`;
     
-    // For movies, use TMDB ID directly (this works!)
-    const endpoint = `/shows/movie/${tmdbId}`;
-    
-    console.log(`📡 Fetching movie data: ${endpoint}`);
+    console.log(`📡 Fetching ${mediaType} data: ${endpoint}`);
     
     const response = await streamingClient.get(endpoint, {
       params: {
+        series_granularity: mediaType === 'tv' ? 'show' : undefined,
         output_language: 'fr'
       }
     });
 
-    console.log(`✅ Successfully fetched data for movie ${tmdbId}`);
+    const countriesCount = response.data.streamingOptions ? Object.keys(response.data.streamingOptions).length : 0;
+    console.log(`✅ Successfully fetched data for ${mediaType} ${tmdbId} (${countriesCount} countries)`);
+    
     return response.data;
   } catch (error) {
     if (error.response?.status === 404) {
