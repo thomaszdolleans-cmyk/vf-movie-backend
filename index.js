@@ -146,108 +146,104 @@ function getCountryName(code) {
 // Cache duration: 7 days
 const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
-// Search for a show by TMDB ID to get the API's internal ID
-async function searchShowByTmdbId(tmdbId, mediaType) {
+// Search for a show by title to get streaming data (TMDB ID search doesn't work reliably for series)
+async function searchShowByTitle(title, year, mediaType) {
   try {
-    console.log(`🔍 Searching for ${mediaType} with TMDB ID: ${tmdbId}`);
+    console.log(`🔍 Searching for ${mediaType} by title: "${title}" (${year})`);
     
-    // Try format 1: "tv/{id}" for series
-    const tmdbIdFormatted = mediaType === 'tv' ? `tv/${tmdbId}` : tmdbId;
-    
-    console.log(`📝 Trying TMDB ID format: ${tmdbIdFormatted}`);
-    
-    const response = await streamingClient.get('/shows/search/filters', {
+    const response = await streamingClient.get('/shows/search/title', {
       params: {
+        title: title,
         country: 'us',
-        catalogs: 'netflix,prime,disney,hbo,apple,paramount',
         show_type: mediaType === 'tv' ? 'series' : 'movie',
-        tmdb_id: tmdbIdFormatted,
         series_granularity: 'show',
         output_language: 'fr'
       }
     });
 
-    if (response.data && response.data.shows && response.data.shows.length > 0) {
-      const show = response.data.shows[0];
+    if (response.data && response.data.length > 0) {
+      // Find the best match by comparing year
+      let bestMatch = response.data[0];
       
-      // Verify we got the correct show by checking TMDB ID
-      const returnedTmdbId = show.tmdbId;
-      console.log(`🔍 Returned TMDB ID: ${returnedTmdbId}, Expected: tv/${tmdbId}`);
-      
-      if (returnedTmdbId === `tv/${tmdbId}` || returnedTmdbId === tmdbId.toString()) {
-        console.log(`✅ Found correct ${mediaType}: "${show.title}" (API ID: ${show.id})`);
-        
-        // If streamingOptions are already in the search result, return the whole show object
-        if (show.streamingOptions && Object.keys(show.streamingOptions).length > 0) {
-          console.log(`🎉 Search returned streamingOptions directly! (${Object.keys(show.streamingOptions).length} countries)`);
-          return show; // Return whole object, not just ID
+      if (year) {
+        for (const show of response.data) {
+          const showYear = show.firstAirYear || show.releaseYear;
+          if (showYear === year) {
+            bestMatch = show;
+            break;
+          }
         }
-        
-        return show.id; // Return just the ID if no streaming options
-      } else {
-        console.log(`⚠️ TMDB ID mismatch! Got ${returnedTmdbId}, expected tv/${tmdbId}`);
       }
+      
+      console.log(`✅ Found ${mediaType}: "${bestMatch.title}" (${bestMatch.firstAirYear || bestMatch.releaseYear})`);
+      console.log(`📊 Has streamingOptions: ${!!bestMatch.streamingOptions}`);
+      
+      // Return the whole show object (includes streamingOptions!)
+      return bestMatch;
     }
     
-    console.log(`❌ No ${mediaType} found with TMDB ID ${tmdbId}`);
+    console.log(`❌ No ${mediaType} found with title "${title}"`);
     return null;
   } catch (error) {
-    console.error('Search error:', error.response?.data || error.message);
+    console.error('Search by title error:', error.response?.data || error.message);
     return null;
   }
 }
 
 // Fetch streaming availability from Streaming Availability API
-async function fetchStreamingAvailability(tmdbId, mediaType = 'movie') {
+async function fetchStreamingAvailability(tmdbId, mediaType = 'movie', mediaDetails = null) {
   try {
-    let apiId = tmdbId;
-    let showData = null;
-    
-    // For TV series, we need to search first to get the API's internal ID
+    // For TV series, we need to search by title because TMDB ID search doesn't work
     if (mediaType === 'tv') {
-      const searchResult = await searchShowByTmdbId(tmdbId, mediaType);
+      // Get title and year from mediaDetails (passed from endpoint)
+      const title = mediaDetails?.name || mediaDetails?.title;
+      const year = mediaDetails?.first_air_date 
+        ? new Date(mediaDetails.first_air_date).getFullYear() 
+        : null;
       
-      if (!searchResult) {
-        console.log(`⚠️ Could not find API ID for TMDB ID ${tmdbId}`);
+      if (!title) {
+        console.log(`⚠️ No title provided for TMDB ID ${tmdbId}`);
         return null;
       }
       
-      // Check if search returned complete data with streamingOptions
-      if (typeof searchResult === 'object' && searchResult.streamingOptions) {
-        console.log(`✅ Using streamingOptions from search result directly!`);
-        return searchResult; // Already has all the data we need!
+      console.log(`📺 Searching for TV series: "${title}" (${year})`);
+      
+      const searchResult = await searchShowByTitle(title, year, mediaType);
+      
+      if (!searchResult) {
+        console.log(`⚠️ Could not find series "${title}" in API`);
+        return null;
       }
       
-      // Otherwise, it's just an ID string
-      apiId = searchResult;
+      // Search result already contains streamingOptions!
+      if (searchResult.streamingOptions && Object.keys(searchResult.streamingOptions).length > 0) {
+        console.log(`✅ Using streamingOptions from search (${Object.keys(searchResult.streamingOptions).length} countries)`);
+        return searchResult;
+      }
+      
+      console.log(`⚠️ No streamingOptions in search result for "${title}"`);
+      return null;
     }
     
-    // Use correct endpoint based on media type
-    const showType = mediaType === 'tv' ? 'series' : 'movie';
-    const endpoint = `/shows/${showType}/${apiId}`;
+    // For movies, use TMDB ID directly (this works!)
+    const endpoint = `/shows/movie/${tmdbId}`;
     
-    console.log(`📡 Fetching ${mediaType} data: ${endpoint}`);
-    console.log(`🔑 Using API ID: ${apiId} (from TMDB ID: ${tmdbId})`);
+    console.log(`📡 Fetching movie data: ${endpoint}`);
     
     const response = await streamingClient.get(endpoint, {
       params: {
-        series_granularity: mediaType === 'tv' ? 'season' : 'show', // Get season details for TV
         output_language: 'fr'
       }
     });
 
-    console.log(`✅ Successfully fetched data for ${mediaType} ${apiId}`);
+    console.log(`✅ Successfully fetched data for movie ${tmdbId}`);
     return response.data;
   } catch (error) {
     if (error.response?.status === 404) {
-      console.log(`❌ 404 Not Found for ${mediaType} ID ${apiId}`);
-      console.log(`Full URL attempted: ${error.config?.url}`);
-      console.log(`Response:`, error.response?.data);
+      console.log(`❌ 404 Not Found for ${mediaType} ID ${tmdbId}`);
       return null;
     }
-    console.error(`❌ Streaming API error for ${mediaType} ${apiId}:`, error.response?.data || error.message);
-    console.error(`Status:`, error.response?.status);
-    console.error(`Full error:`, error);
+    console.error(`❌ Streaming API error:`, error.response?.data || error.message);
     return null;
   }
 }
@@ -509,7 +505,7 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
     // Fetch fresh data using TMDB ID
     const title = mediaType === 'movie' ? mediaDetails.title : mediaDetails.name;
     console.log(`🔍 Fetching streaming data for "${title}" (TMDB ID: ${tmdb_id}, Type: ${mediaType})`);
-    const streamingData = await fetchStreamingAvailability(tmdb_id, mediaType);
+    const streamingData = await fetchStreamingAvailability(tmdb_id, mediaType, mediaDetails);
 
     if (!streamingData) {
       return res.json({ 
@@ -559,61 +555,75 @@ app.get('/api/movie/:id/availability', async (req, res) => {
   return res.redirect(308, `/api/media/movie/${req.params.id}/availability`);
 });
 
-// Debug endpoint - test search to see what data is returned
+// Debug endpoint - test search by title to see what data is returned
 app.get('/api/debug-search/:tmdb_id', async (req, res) => {
   try {
     const tmdb_id = parseInt(req.params.tmdb_id);
     
     console.log(`🔍 Testing search for TMDB ID: ${tmdb_id}`);
     
-    // Try with "tv/{id}" format
-    const tmdbIdFormatted = `tv/${tmdb_id}`;
+    // First, get the series details from TMDB to get the title
+    const tmdbResponse = await tmdbClient.get(`/tv/${tmdb_id}`);
+    const seriesDetails = tmdbResponse.data;
+    const title = seriesDetails.name;
+    const year = seriesDetails.first_air_date 
+      ? new Date(seriesDetails.first_air_date).getFullYear() 
+      : null;
     
-    const response = await streamingClient.get('/shows/search/filters', {
+    console.log(`📺 Series from TMDB: "${title}" (${year})`);
+    
+    // Now search by title in Streaming Availability API
+    const response = await streamingClient.get('/shows/search/title', {
       params: {
+        title: title,
         country: 'us',
-        catalogs: 'netflix,prime,disney,hbo,apple,paramount',
         show_type: 'series',
-        tmdb_id: tmdbIdFormatted,
         series_granularity: 'show',
         output_language: 'fr'
       }
     });
 
-    const shows = response.data?.shows || [];
+    const shows = response.data || [];
     
     if (shows.length === 0) {
       return res.json({
         found: false,
         tmdb_id,
-        tmdb_id_formatted: tmdbIdFormatted,
-        message: 'No shows found with this TMDB ID'
+        title_searched: title,
+        year,
+        message: 'No shows found with this title'
       });
     }
     
-    const show = shows[0];
-    
-    // Check if TMDB ID matches
-    const tmdbIdMatches = show.tmdbId === tmdbIdFormatted || show.tmdbId === tmdb_id.toString();
+    // Find best match by year
+    let bestMatch = shows[0];
+    if (year) {
+      for (const show of shows) {
+        const showYear = show.firstAirYear || show.releaseYear;
+        if (showYear === year) {
+          bestMatch = show;
+          break;
+        }
+      }
+    }
     
     res.json({
       found: true,
       tmdb_id_input: tmdb_id,
-      tmdb_id_formatted: tmdbIdFormatted,
-      tmdb_id_returned: show.tmdbId,
-      tmdb_id_matches: tmdbIdMatches,
-      show: {
-        id: show.id,
-        title: show.title,
-        imdbId: show.imdbId,
-        showType: show.showType,
-        streamingOptions: show.streamingOptions ? Object.keys(show.streamingOptions) : [],
-        total_countries: show.streamingOptions ? Object.keys(show.streamingOptions).length : 0,
-        has_data: !!show.streamingOptions
+      title_searched: title,
+      year_searched: year,
+      total_results: shows.length,
+      best_match: {
+        title: bestMatch.title,
+        year: bestMatch.firstAirYear || bestMatch.releaseYear,
+        id: bestMatch.id,
+        tmdbId: bestMatch.tmdbId,
+        imdbId: bestMatch.imdbId,
+        streamingOptions: bestMatch.streamingOptions ? Object.keys(bestMatch.streamingOptions) : [],
+        total_countries: bestMatch.streamingOptions ? Object.keys(bestMatch.streamingOptions).length : 0,
+        has_data: !!bestMatch.streamingOptions
       },
-      note: tmdbIdMatches 
-        ? "✅ Correct show found! Data can be used directly from search."
-        : "❌ TMDB ID mismatch - wrong show returned by API!"
+      note: "✅ Search by title works! Data can be used directly."
     });
   } catch (error) {
     console.error('Search debug error:', error);
@@ -631,61 +641,49 @@ app.get('/api/debug-series/:tmdb_id', async (req, res) => {
     
     console.log(`🔍 DEBUG: Fetching series data for TMDB ID: ${tmdb_id}`);
     
-    // Step 1: Search for API ID
-    console.log(`Step 1: Searching for API ID...`);
-    const apiId = await searchShowByTmdbId(tmdb_id, 'tv');
+    // Step 1: Get series details from TMDB
+    console.log(`Step 1: Getting series details from TMDB...`);
+    const tmdbResponse = await tmdbClient.get(`/tv/${tmdb_id}`);
+    const seriesDetails = tmdbResponse.data;
+    const title = seriesDetails.name;
+    const year = seriesDetails.first_air_date 
+      ? new Date(seriesDetails.first_air_date).getFullYear() 
+      : null;
     
-    if (!apiId) {
-      return res.json({ 
-        error: 'Could not find series in API',
-        tmdb_id,
-        step: 'search_failed',
-        suggestion: 'The series might not be in the Streaming Availability database'
-      });
-    }
+    console.log(`📺 Series: "${title}" (${year})`);
     
-    console.log(`✅ Found API ID: ${apiId}`);
-    
-    // Step 2: Try to get the show details directly
-    console.log(`Step 2: Fetching show data with API ID ${apiId}...`);
-    
-    let showData = null;
-    let fetchError = null;
-    
-    try {
-      const response = await streamingClient.get(`/shows/series/${apiId}`, {
-        params: {
-          series_granularity: 'season',
-          output_language: 'fr'
-        }
-      });
-      showData = response.data;
-    } catch (error) {
-      fetchError = {
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        message: error.message,
-        url: error.config?.url,
-        params: error.config?.params
-      };
-    }
+    // Step 2: Search by title
+    console.log(`Step 2: Searching by title...`);
+    const showData = await searchShowByTitle(title, year, 'tv');
     
     if (!showData) {
       return res.json({
-        error: 'Fetch failed',
+        error: 'Search failed',
         tmdb_id,
-        api_id: apiId,
-        step: 'fetch_failed',
-        error_details: fetchError,
-        suggestion: 'The API might not have streaming data for this series, or the endpoint format is wrong'
+        title,
+        year,
+        step: 'search_failed',
+        suggestion: 'Series not found in Streaming Availability API'
       });
     }
     
+    console.log(`✅ Found series data`);
+    
     // Step 3: Show sample data
-    const sampleOptions = [];
     const streamingOptions = showData.streamingOptions || {};
     
+    if (Object.keys(streamingOptions).length === 0) {
+      return res.json({
+        error: 'No streaming options',
+        tmdb_id,
+        title,
+        show_id: showData.id,
+        step: 'no_streaming_options',
+        suggestion: 'Series found but no streaming availability data'
+      });
+    }
+    
+    const sampleOptions = [];
     for (const [country, options] of Object.entries(streamingOptions)) {
       if (sampleOptions.length >= 5) break;
       
@@ -705,11 +703,12 @@ app.get('/api/debug-series/:tmdb_id', async (req, res) => {
     res.json({
       success: true,
       tmdb_id,
-      api_id: apiId,
+      title,
+      year,
+      show_id: showData.id,
       total_countries: Object.keys(streamingOptions).length,
       sample_options: sampleOptions,
-      show_title: showData.title,
-      note: "Success! Data was fetched correctly"
+      note: "Success! Series found by title search with streaming data."
     });
   } catch (error) {
     console.error('Debug series error:', error);
