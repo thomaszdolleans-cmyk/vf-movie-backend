@@ -151,12 +151,17 @@ async function searchShowByTmdbId(tmdbId, mediaType) {
   try {
     console.log(`🔍 Searching for ${mediaType} with TMDB ID: ${tmdbId}`);
     
+    // Try format 1: "tv/{id}" for series
+    const tmdbIdFormatted = mediaType === 'tv' ? `tv/${tmdbId}` : tmdbId;
+    
+    console.log(`📝 Trying TMDB ID format: ${tmdbIdFormatted}`);
+    
     const response = await streamingClient.get('/shows/search/filters', {
       params: {
-        country: 'us', // Use US as base country for search
+        country: 'us',
         catalogs: 'netflix,prime,disney,hbo,apple,paramount',
         show_type: mediaType === 'tv' ? 'series' : 'movie',
-        tmdb_id: tmdbId,
+        tmdb_id: tmdbIdFormatted,
         series_granularity: 'show',
         output_language: 'fr'
       }
@@ -164,8 +169,24 @@ async function searchShowByTmdbId(tmdbId, mediaType) {
 
     if (response.data && response.data.shows && response.data.shows.length > 0) {
       const show = response.data.shows[0];
-      console.log(`✅ Found ${mediaType}: "${show.title}" (API ID: ${show.id})`);
-      return show.id; // Return the API's internal ID
+      
+      // Verify we got the correct show by checking TMDB ID
+      const returnedTmdbId = show.tmdbId;
+      console.log(`🔍 Returned TMDB ID: ${returnedTmdbId}, Expected: tv/${tmdbId}`);
+      
+      if (returnedTmdbId === `tv/${tmdbId}` || returnedTmdbId === tmdbId.toString()) {
+        console.log(`✅ Found correct ${mediaType}: "${show.title}" (API ID: ${show.id})`);
+        
+        // If streamingOptions are already in the search result, return the whole show object
+        if (show.streamingOptions && Object.keys(show.streamingOptions).length > 0) {
+          console.log(`🎉 Search returned streamingOptions directly! (${Object.keys(show.streamingOptions).length} countries)`);
+          return show; // Return whole object, not just ID
+        }
+        
+        return show.id; // Return just the ID if no streaming options
+      } else {
+        console.log(`⚠️ TMDB ID mismatch! Got ${returnedTmdbId}, expected tv/${tmdbId}`);
+      }
     }
     
     console.log(`❌ No ${mediaType} found with TMDB ID ${tmdbId}`);
@@ -180,14 +201,25 @@ async function searchShowByTmdbId(tmdbId, mediaType) {
 async function fetchStreamingAvailability(tmdbId, mediaType = 'movie') {
   try {
     let apiId = tmdbId;
+    let showData = null;
     
     // For TV series, we need to search first to get the API's internal ID
     if (mediaType === 'tv') {
-      apiId = await searchShowByTmdbId(tmdbId, mediaType);
-      if (!apiId) {
+      const searchResult = await searchShowByTmdbId(tmdbId, mediaType);
+      
+      if (!searchResult) {
         console.log(`⚠️ Could not find API ID for TMDB ID ${tmdbId}`);
         return null;
       }
+      
+      // Check if search returned complete data with streamingOptions
+      if (typeof searchResult === 'object' && searchResult.streamingOptions) {
+        console.log(`✅ Using streamingOptions from search result directly!`);
+        return searchResult; // Already has all the data we need!
+      }
+      
+      // Otherwise, it's just an ID string
+      apiId = searchResult;
     }
     
     // Use correct endpoint based on media type
@@ -534,12 +566,15 @@ app.get('/api/debug-search/:tmdb_id', async (req, res) => {
     
     console.log(`🔍 Testing search for TMDB ID: ${tmdb_id}`);
     
+    // Try with "tv/{id}" format
+    const tmdbIdFormatted = `tv/${tmdb_id}`;
+    
     const response = await streamingClient.get('/shows/search/filters', {
       params: {
         country: 'us',
         catalogs: 'netflix,prime,disney,hbo,apple,paramount',
         show_type: 'series',
-        tmdb_id: tmdb_id,
+        tmdb_id: tmdbIdFormatted,
         series_granularity: 'show',
         output_language: 'fr'
       }
@@ -551,26 +586,34 @@ app.get('/api/debug-search/:tmdb_id', async (req, res) => {
       return res.json({
         found: false,
         tmdb_id,
+        tmdb_id_formatted: tmdbIdFormatted,
         message: 'No shows found with this TMDB ID'
       });
     }
     
     const show = shows[0];
     
+    // Check if TMDB ID matches
+    const tmdbIdMatches = show.tmdbId === tmdbIdFormatted || show.tmdbId === tmdb_id.toString();
+    
     res.json({
       found: true,
-      tmdb_id,
+      tmdb_id_input: tmdb_id,
+      tmdb_id_formatted: tmdbIdFormatted,
+      tmdb_id_returned: show.tmdbId,
+      tmdb_id_matches: tmdbIdMatches,
       show: {
         id: show.id,
         title: show.title,
-        tmdbId: show.tmdbId,
         imdbId: show.imdbId,
         showType: show.showType,
         streamingOptions: show.streamingOptions ? Object.keys(show.streamingOptions) : [],
         total_countries: show.streamingOptions ? Object.keys(show.streamingOptions).length : 0,
-        first_country_sample: show.streamingOptions ? Object.entries(show.streamingOptions)[0] : null
+        has_data: !!show.streamingOptions
       },
-      note: "If streamingOptions is present in search results, we don't need a second fetch!"
+      note: tmdbIdMatches 
+        ? "✅ Correct show found! Data can be used directly from search."
+        : "❌ TMDB ID mismatch - wrong show returned by API!"
     });
   } catch (error) {
     console.error('Search debug error:', error);
