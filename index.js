@@ -442,6 +442,145 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
+// Get list of genres for movies and TV
+app.get('/api/genres', async (req, res) => {
+  try {
+    const [movieGenres, tvGenres] = await Promise.all([
+      tmdbClient.get('/genre/movie/list'),
+      tmdbClient.get('/genre/tv/list')
+    ]);
+
+    // Merge and deduplicate genres
+    const allGenres = [...movieGenres.data.genres, ...tvGenres.data.genres];
+    const uniqueGenres = Array.from(new Map(allGenres.map(g => [g.id, g])).values());
+    
+    // Sort alphabetically
+    uniqueGenres.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+
+    res.json({ genres: uniqueGenres });
+  } catch (error) {
+    console.error('Genres error:', error);
+    res.status(500).json({ error: 'Failed to fetch genres' });
+  }
+});
+
+// Discover movies and TV series with filters
+app.get('/api/discover', async (req, res) => {
+  try {
+    const { 
+      type = 'movie',      // 'movie' or 'tv'
+      genre,               // Genre ID
+      year,                // Year (for movies: release year, for TV: first air year)
+      sort = 'popularity', // 'popularity', 'vote_average', 'release_date'
+      page = 1 
+    } = req.query;
+
+    const mediaType = type === 'tv' ? 'tv' : 'movie';
+    const endpoint = `/discover/${mediaType}`;
+
+    // Build params
+    const params = {
+      page: parseInt(page),
+      'vote_count.gte': 100, // Only shows with enough votes
+    };
+
+    // Sort options
+    const sortMap = {
+      'popularity': 'popularity.desc',
+      'vote_average': 'vote_average.desc',
+      'release_date': mediaType === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc',
+      'title': mediaType === 'movie' ? 'title.asc' : 'name.asc'
+    };
+    params.sort_by = sortMap[sort] || 'popularity.desc';
+
+    // Genre filter
+    if (genre) {
+      params.with_genres = genre;
+    }
+
+    // Year filter
+    if (year) {
+      if (mediaType === 'movie') {
+        params.primary_release_year = year;
+      } else {
+        params.first_air_date_year = year;
+      }
+    }
+
+    console.log(`🔍 Discovering ${mediaType}s with params:`, params);
+
+    const response = await tmdbClient.get(endpoint, { params });
+
+    const results = response.data.results.slice(0, 20).map(item => {
+      const isMovie = mediaType === 'movie';
+      return {
+        tmdb_id: item.id,
+        media_type: mediaType,
+        title: isMovie ? item.title : item.name,
+        original_title: isMovie ? item.original_title : item.original_name,
+        year: isMovie 
+          ? (item.release_date ? new Date(item.release_date).getFullYear() : null)
+          : (item.first_air_date ? new Date(item.first_air_date).getFullYear() : null),
+        poster: item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : null,
+        backdrop: item.backdrop_path ? `https://image.tmdb.org/t/p/w780${item.backdrop_path}` : null,
+        vote_average: item.vote_average,
+        overview: item.overview,
+        genre_ids: item.genre_ids
+      };
+    });
+
+    res.json({ 
+      results,
+      page: response.data.page,
+      total_pages: Math.min(response.data.total_pages, 500), // TMDB limits to 500 pages
+      total_results: response.data.total_results
+    });
+  } catch (error) {
+    console.error('Discover error:', error);
+    res.status(500).json({ error: 'Discover failed' });
+  }
+});
+
+// Get trending movies and TV series
+app.get('/api/trending', async (req, res) => {
+  try {
+    const { type = 'all', time = 'week' } = req.query;
+    
+    // type: 'all', 'movie', 'tv'
+    // time: 'day', 'week'
+    const mediaType = ['movie', 'tv', 'all'].includes(type) ? type : 'all';
+    const timeWindow = time === 'day' ? 'day' : 'week';
+
+    const response = await tmdbClient.get(`/trending/${mediaType}/${timeWindow}`);
+
+    const results = response.data.results
+      .filter(item => item.media_type === 'movie' || item.media_type === 'tv')
+      .slice(0, 20)
+      .map(item => {
+        const isMovie = item.media_type === 'movie';
+        return {
+          tmdb_id: item.id,
+          media_type: item.media_type,
+          title: isMovie ? item.title : item.name,
+          original_title: isMovie ? item.original_title : item.original_name,
+          year: isMovie 
+            ? (item.release_date ? new Date(item.release_date).getFullYear() : null)
+            : (item.first_air_date ? new Date(item.first_air_date).getFullYear() : null),
+          poster: item.poster_path ? `https://image.tmdb.org/t/p/w342${item.poster_path}` : null,
+          backdrop: item.backdrop_path ? `https://image.tmdb.org/t/p/w780${item.backdrop_path}` : null,
+          vote_average: item.vote_average,
+          overview: item.overview,
+          genre_ids: item.genre_ids
+        };
+      });
+
+    res.json({ results });
+  } catch (error) {
+    console.error('Trending error:', error);
+    res.status(500).json({ error: 'Trending failed' });
+  }
+});
+
 // Get media availability (movies and TV series)
 app.get('/api/media/:type/:id/availability', async (req, res) => {
   try {
