@@ -154,7 +154,7 @@ async function searchShowByTitle(title, year, mediaType) {
     const response = await streamingClient.get('/shows/search/title', {
       params: {
         title: title,
-        country: 'us',
+        // Don't specify country - we want results from ALL countries!
         show_type: mediaType === 'tv' ? 'series' : 'movie',
         series_granularity: 'show',
         output_language: 'fr'
@@ -175,8 +175,9 @@ async function searchShowByTitle(title, year, mediaType) {
         }
       }
       
+      const countriesCount = bestMatch.streamingOptions ? Object.keys(bestMatch.streamingOptions).length : 0;
       console.log(`✅ Found ${mediaType}: "${bestMatch.title}" (${bestMatch.firstAirYear || bestMatch.releaseYear})`);
-      console.log(`📊 Has streamingOptions: ${!!bestMatch.streamingOptions}`);
+      console.log(`📊 Has streamingOptions: ${!!bestMatch.streamingOptions} (${countriesCount} countries)`);
       
       // Return the whole show object (includes streamingOptions!)
       return bestMatch;
@@ -576,7 +577,7 @@ app.get('/api/debug-search/:tmdb_id', async (req, res) => {
     const response = await streamingClient.get('/shows/search/title', {
       params: {
         title: title,
-        country: 'us',
+        // Don't specify country - we want ALL countries!
         show_type: 'series',
         series_granularity: 'show',
         output_language: 'fr'
