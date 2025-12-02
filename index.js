@@ -146,76 +146,9 @@ function getCountryName(code) {
 // Cache duration: 7 days
 const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
-// Search for a show by title to get streaming data (TMDB ID search doesn't work reliably for series)
-async function searchShowByTitle(title, year, mediaType) {
-  try {
-    console.log(`🔍 Searching for ${mediaType} by title: "${title}" (${year})`);
-    
-    // Try /shows/search/filters - might support all countries
-    const response = await streamingClient.get('/shows/search/filters', {
-      params: {
-        // Don't specify country - see if this returns all countries
-        catalogs: 'netflix,prime,disney,hbo,apple,paramount,hulu,peacock',
-        show_type: mediaType === 'tv' ? 'series' : 'movie',
-        series_granularity: 'show',
-        output_language: 'fr'
-      }
-    });
-
-    const shows = response.data?.shows || [];
-    
-    if (shows.length > 0) {
-      // Find show matching the title and year
-      let bestMatch = null;
-      
-      for (const show of shows) {
-        // Check if title matches (case insensitive)
-        const showTitle = show.title.toLowerCase();
-        const searchTitle = title.toLowerCase();
-        
-        if (showTitle === searchTitle || showTitle.includes(searchTitle) || searchTitle.includes(showTitle)) {
-          const showYear = show.firstAirYear || show.releaseYear;
-          
-          // If year matches or no year to compare
-          if (!year || showYear === year) {
-            bestMatch = show;
-            break;
-          }
-          
-          // Keep as fallback if no exact year match
-          if (!bestMatch) {
-            bestMatch = show;
-          }
-        }
-      }
-      
-      if (!bestMatch) {
-        // No title match found, use first result
-        bestMatch = shows[0];
-      }
-      
-      const countriesCount = bestMatch.streamingOptions ? Object.keys(bestMatch.streamingOptions).length : 0;
-      console.log(`✅ Found ${mediaType}: "${bestMatch.title}" (${bestMatch.firstAirYear || bestMatch.releaseYear})`);
-      console.log(`📊 Has streamingOptions: ${!!bestMatch.streamingOptions} (${countriesCount} countries)`);
-      
-      // Return the whole show object (includes streamingOptions!)
-      return bestMatch;
-    }
-    
-    console.log(`❌ No ${mediaType} found with title "${title}"`);
-    return null;
-  } catch (error) {
-    console.error('Search by filters error:', error.response?.data || error.message);
-    return null;
-  }
-}
-
 // Fetch streaming availability from Streaming Availability API
 async function fetchStreamingAvailability(tmdbId, mediaType = 'movie', mediaDetails = null) {
   try {
-    // Use the correct endpoint based on media type
-    // For movies: /shows/movie/{tmdb_id}
-    // For TV series: /shows/tv/{tmdb_id}
     const showType = mediaType === 'tv' ? 'tv' : 'movie';
     const endpoint = `/shows/${showType}/${tmdbId}`;
     
@@ -253,7 +186,7 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
   const streamingOptions = streamingData.streamingOptions;
 
   // Delete old cache for this item
-  await pool.query('DELETE FROM availabilities WHERE tmdb_id = $1 AND media_type = $2', [tmdbId, mediaType]);
+  await pool.query('DELETE FROM availabilities WHERE tmdb_id = $1', [tmdbId]);
 
   // Process each country
   for (const [countryCode, options] of Object.entries(streamingOptions)) {
@@ -265,40 +198,19 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
       if (!option || !option.service) continue;
 
       const platformKey = option.service.id;
-      // Always use the main service name, never the addon name
       const platformName = PLATFORMS[platformKey] || option.service.name || platformKey;
-      
-      // Get streaming type (subscription, rent, buy, free, addon)
       const streamingType = option.type || 'subscription';
-      
-      // Get addon name if type is addon (this is the channel/addon name, not the platform)
-      const addonName = streamingType === 'addon' && option.addon?.name 
-        ? option.addon.name 
-        : null;
+      const addonName = streamingType === 'addon' && option.addon?.name ? option.addon.name : null;
       
       // FILTER: Skip Prime addons except Starz and MGM
       if (platformKey === 'prime' && streamingType === 'addon') {
         const allowedPrimeAddons = ['Starz', 'MGM+', 'MGM Plus', 'MGM', 'STARZ'];
         if (!addonName || !allowedPrimeAddons.some(allowed => addonName.toLowerCase().includes(allowed.toLowerCase()))) {
-          console.log(`⏭️ Skipping Prime addon: ${addonName || 'unknown'} (not Starz or MGM)`);
-          continue; // Skip this option
+          continue;
         }
-        console.log(`✅ Keeping Prime addon: ${addonName} (Starz or MGM)`);
-      }
-      
-      // Debug logging for addons
-      if (streamingType === 'addon' && availabilities.length < 3) {
-        console.log(`🔍 ADDON DEBUG:`, {
-          platformKey,
-          platformName,
-          addonName,
-          serviceId: option.service.id,
-          serviceName: option.service.name,
-          addonFullName: option.addon?.name
-        });
       }
 
-      // Check for French audio and subtitles with improved detection
+      // Check for French audio and subtitles
       const hasFrenchAudio = option.audios?.some(a => {
         const lang = a.language?.toLowerCase();
         return lang === 'fra' || lang === 'fr' || lang === 'fre';
@@ -306,88 +218,51 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
 
       const hasFrenchSubtitles = option.subtitles?.some(s => {
         if (!s) return false;
-        
-        // Handle language (direct string)
         const lang = s.language ? String(s.language).toLowerCase() : '';
-        
-        // Handle locale (object with language property)
         const localeLanguage = s.locale?.language ? String(s.locale.language).toLowerCase() : '';
-        
-        // Check both language and locale.language for French
         return lang === 'fra' || lang === 'fr' || lang === 'fre' || 
                localeLanguage === 'fra' || localeLanguage === 'fr' || localeLanguage === 'fre';
       }) || false;
 
-      // FILTER: Skip if no French audio AND no French subtitles
+      // FILTER: Skip if no French content
       if (!hasFrenchAudio && !hasFrenchSubtitles) {
-        continue; // Skip this option - we only want French content
+        continue;
       }
 
-      // For TV series, we need to handle seasons
-      const seasons = mediaType === 'tv' && option.seasons && Array.isArray(option.seasons) 
-        ? option.seasons 
-        : [null]; // For movies or if no seasons, use null
+      const availability = {
+        tmdb_id: tmdbId,
+        platform: platformName,
+        country_code: country,
+        country_name: countryName,
+        streaming_type: streamingType,
+        addon_name: addonName,
+        has_french_audio: hasFrenchAudio,
+        has_french_subtitles: hasFrenchSubtitles,
+        streaming_url: option.link || null,
+        quality: option.quality || 'hd'
+      };
 
-      // Create an entry for EACH season (or one entry for movies)
-      for (const seasonNumber of seasons) {
-        // Debug logging for first few entries
-        if (availabilities.length < 5) {
-          console.log(`📊 ${platformName} (${streamingType}${addonName ? ` - ${addonName}` : ''}) in ${countryName}${seasonNumber ? ` - Season ${seasonNumber}` : ''}:`, {
-            audios: option.audios?.map(a => a.language),
-            subtitles: option.subtitles?.map(s => ({ 
-              lang: s.language, 
-              localeLanguage: s.locale?.language,
-              closedCaptions: s.closedCaptions 
-            })),
-            hasFrenchAudio,
-            hasFrenchSubtitles,
-            type: streamingType,
-            addon: addonName,
-            quality: option.quality,
-            season: seasonNumber,
-            allSeasons: seasons
-          });
-        }
-
-        const availability = {
-          tmdb_id: tmdbId,
-          media_type: mediaType,
-          platform: platformName,
-          country_code: country,
-          country_name: countryName,
-          streaming_type: streamingType,
-          addon_name: addonName,
-          season_number: seasonNumber,
-          has_french_audio: hasFrenchAudio,
-          has_french_subtitles: hasFrenchSubtitles,
-          streaming_url: option.link || null,
-          quality: option.quality || 'hd'
-        };
-
-        // Insert into database
-        try {
-          await pool.query(
-            `INSERT INTO availabilities 
-            (tmdb_id, media_type, platform, country_code, country_name, streaming_type, addon_name, season_number, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)
-            ON CONFLICT (tmdb_id, media_type, platform, country_code, streaming_type, addon_name, quality, season_number) 
-            DO UPDATE SET 
-              has_french_audio = $9,
-              has_french_subtitles = $10,
-              streaming_url = $11,
-              updated_at = CURRENT_TIMESTAMP`,
-            [tmdbId, mediaType, platformName, country, countryName, streamingType, addonName, seasonNumber, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
-          );
-
-          availabilities.push(availability);
-        } catch (dbError) {
-          console.error('Database insert error:', dbError);
-        }
+      try {
+        await pool.query(
+          `INSERT INTO availabilities 
+          (tmdb_id, platform, country_code, country_name, streaming_type, addon_name, has_french_audio, has_french_subtitles, streaming_url, quality, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+          ON CONFLICT (tmdb_id, platform, country_code, streaming_type, addon_name) 
+          DO UPDATE SET 
+            has_french_audio = $7,
+            has_french_subtitles = $8,
+            streaming_url = $9,
+            updated_at = CURRENT_TIMESTAMP`,
+          [tmdbId, platformName, country, countryName, streamingType, addonName, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
+        );
+        availabilities.push(availability);
+      } catch (dbError) {
+        console.error('Database insert error:', dbError);
       }
     }
   }
 
-  console.log(`✅ Cached ${availabilities.length} availabilities for TMDB ID ${tmdbId} (${availabilities.filter(a => a.has_french_audio || a.has_french_subtitles).length} with French content)`);
+  console.log(`✅ Cached ${availabilities.length} availabilities for TMDB ID ${tmdbId}`);
   return availabilities;
 }
 
@@ -402,28 +277,26 @@ app.get('/api/search', async (req, res) => {
       return res.json({ results: [] });
     }
 
-    // Use multi-search to get both movies and TV series
     const searchResponse = await tmdbClient.get('/search/multi', {
       params: { query }
     });
 
     const results = await Promise.all(
       searchResponse.data.results
-        .filter(item => item.media_type === 'movie' || item.media_type === 'tv') // Only movies and TV
+        .filter(item => item.media_type === 'movie' || item.media_type === 'tv')
         .slice(0, 10)
         .map(async (item) => {
           const isMovie = item.media_type === 'movie';
           const tmdbId = item.id;
           
-          // Check how many availabilities we have cached
           const countResult = await pool.query(
-            'SELECT COUNT(DISTINCT country_code) as count FROM availabilities WHERE tmdb_id = $1 AND media_type = $2',
-            [tmdbId, item.media_type]
+            'SELECT COUNT(DISTINCT country_code) as count FROM availabilities WHERE tmdb_id = $1',
+            [tmdbId]
           );
 
           return {
             tmdb_id: tmdbId,
-            media_type: item.media_type, // 'movie' or 'tv'
+            media_type: item.media_type,
             title: isMovie ? item.title : item.name,
             original_title: isMovie ? item.original_title : item.original_name,
             year: isMovie 
@@ -442,22 +315,15 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
-// Get list of genres for movies and TV
+// Get list of genres
 app.get('/api/genres', async (req, res) => {
   try {
-    const [movieGenres, tvGenres] = await Promise.all([
-      tmdbClient.get('/genre/movie/list'),
-      tmdbClient.get('/genre/tv/list')
-    ]);
-
-    // Merge and deduplicate genres
-    const allGenres = [...movieGenres.data.genres, ...tvGenres.data.genres];
-    const uniqueGenres = Array.from(new Map(allGenres.map(g => [g.id, g])).values());
+    const { type = 'movie' } = req.query;
     
-    // Sort alphabetically
-    uniqueGenres.sort((a, b) => a.name.localeCompare(b.name, 'fr'));
-
-    res.json({ genres: uniqueGenres });
+    const endpoint = type === 'tv' ? '/genre/tv/list' : '/genre/movie/list';
+    const response = await tmdbClient.get(endpoint);
+    
+    res.json({ genres: response.data.genres });
   } catch (error) {
     console.error('Genres error:', error);
     res.status(500).json({ error: 'Failed to fetch genres' });
@@ -465,23 +331,44 @@ app.get('/api/genres', async (req, res) => {
 });
 
 // Discover movies and TV series with filters
+// FIXED: Now accepts both "genre" and "with_genres" parameters
+// FIXED: Now accepts both "year" and "primary_release_year"/"first_air_date_year" parameters
 app.get('/api/discover', async (req, res) => {
   try {
     const { 
-      type = 'movie',      // 'movie' or 'tv'
-      genre,               // Genre ID
-      year,                // Year (for movies: release year, for TV: first air year)
-      sort = 'popularity', // 'popularity', 'vote_average', 'release_date'
+      type = 'movie',
+      // Accept multiple parameter names for genre
+      genre,
+      with_genres,
+      // Accept multiple parameter names for year  
+      year,
+      primary_release_year,
+      first_air_date_year,
+      // Sort parameter - accept both formats
+      sort,
+      sort_by,
       page = 1 
     } = req.query;
 
     const mediaType = type === 'tv' ? 'tv' : 'movie';
     const endpoint = `/discover/${mediaType}`;
 
+    // Use whichever genre parameter was provided
+    const genreFilter = genre || with_genres;
+    
+    // Use whichever year parameter was provided
+    const yearFilter = year || primary_release_year || first_air_date_year;
+    
+    // Parse sort parameter (handle both "popularity" and "popularity.desc" formats)
+    let sortValue = sort || sort_by || 'popularity';
+    if (sortValue.includes('.')) {
+      sortValue = sortValue.split('.')[0]; // Extract "popularity" from "popularity.desc"
+    }
+
     // Build params
     const params = {
       page: parseInt(page),
-      'vote_count.gte': 100, // Only shows with enough votes
+      'vote_count.gte': 100,
     };
 
     // Sort options
@@ -491,19 +378,19 @@ app.get('/api/discover', async (req, res) => {
       'release_date': mediaType === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc',
       'title': mediaType === 'movie' ? 'title.asc' : 'name.asc'
     };
-    params.sort_by = sortMap[sort] || 'popularity.desc';
+    params.sort_by = sortMap[sortValue] || 'popularity.desc';
 
     // Genre filter
-    if (genre) {
-      params.with_genres = genre;
+    if (genreFilter) {
+      params.with_genres = genreFilter;
     }
 
     // Year filter
-    if (year) {
+    if (yearFilter) {
       if (mediaType === 'movie') {
-        params.primary_release_year = year;
+        params.primary_release_year = yearFilter;
       } else {
-        params.first_air_date_year = year;
+        params.first_air_date_year = yearFilter;
       }
     }
 
@@ -532,7 +419,7 @@ app.get('/api/discover', async (req, res) => {
     res.json({ 
       results,
       page: response.data.page,
-      total_pages: Math.min(response.data.total_pages, 500), // TMDB limits to 500 pages
+      total_pages: Math.min(response.data.total_pages, 500),
       total_results: response.data.total_results
     });
   } catch (error) {
@@ -546,8 +433,6 @@ app.get('/api/trending', async (req, res) => {
   try {
     const { type = 'all', time = 'week' } = req.query;
     
-    // type: 'all', 'movie', 'tv'
-    // time: 'day', 'week'
     const mediaType = ['movie', 'tv', 'all'].includes(type) ? type : 'all';
     const timeWindow = time === 'day' ? 'day' : 'week';
 
@@ -585,7 +470,7 @@ app.get('/api/trending', async (req, res) => {
 app.get('/api/media/:type/:id/availability', async (req, res) => {
   try {
     const tmdb_id = parseInt(req.params.id);
-    const mediaType = req.params.type; // 'movie' or 'tv'
+    const mediaType = req.params.type;
 
     if (mediaType !== 'movie' && mediaType !== 'tv') {
       return res.status(400).json({ error: 'Invalid media type. Must be "movie" or "tv"' });
@@ -598,8 +483,8 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
 
     // Check cache
     const cacheCheck = await pool.query(
-      'SELECT updated_at FROM availabilities WHERE tmdb_id = $1 AND media_type = $2 ORDER BY updated_at DESC LIMIT 1',
-      [tmdb_id, mediaType]
+      'SELECT updated_at FROM availabilities WHERE tmdb_id = $1 ORDER BY updated_at DESC LIMIT 1',
+      [tmdb_id]
     );
 
     if (cacheCheck.rows.length > 0) {
@@ -607,11 +492,11 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
 
       if (cacheAge < CACHE_DURATION) {
         const title = mediaType === 'movie' ? mediaDetails.title : mediaDetails.name;
-        console.log(`✅ Using cached data (${Math.round(cacheAge / (1000 * 60 * 60))} hours old) for "${title}"`);
+        console.log(`✅ Using cached data for "${title}"`);
 
         const cached = await pool.query(
-          'SELECT * FROM availabilities WHERE tmdb_id = $1 AND media_type = $2 ORDER BY platform, country_name, season_number',
-          [tmdb_id, mediaType]
+          'SELECT * FROM availabilities WHERE tmdb_id = $1 ORDER BY platform, country_name',
+          [tmdb_id]
         );
 
         return res.json({ 
@@ -630,14 +515,12 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
             number_of_seasons: mediaType === 'tv' ? mediaDetails.number_of_seasons : null
           }
         });
-      } else {
-        console.log(`⏰ Cache expired (${Math.round(cacheAge / (1000 * 60 * 60 * 24))} days old), fetching fresh data...`);
       }
     }
 
-    // Fetch fresh data using TMDB ID
+    // Fetch fresh data
     const title = mediaType === 'movie' ? mediaDetails.title : mediaDetails.name;
-    console.log(`🔍 Fetching streaming data for "${title}" (TMDB ID: ${tmdb_id}, Type: ${mediaType})`);
+    console.log(`🔍 Fetching streaming data for "${title}"`);
     const streamingData = await fetchStreamingAvailability(tmdb_id, mediaType, mediaDetails);
 
     if (!streamingData) {
@@ -683,325 +566,9 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
   }
 });
 
-// Backwards compatibility: redirect old movie endpoint to new media endpoint
+// Backwards compatibility
 app.get('/api/movie/:id/availability', async (req, res) => {
   return res.redirect(308, `/api/media/movie/${req.params.id}/availability`);
-});
-
-// Debug endpoint - test search by title to see what data is returned
-app.get('/api/debug-search/:tmdb_id', async (req, res) => {
-  try {
-    const tmdb_id = parseInt(req.params.tmdb_id);
-    
-    console.log(`🔍 Testing search for TMDB ID: ${tmdb_id}`);
-    
-    // First, get the series details from TMDB to get the title
-    const tmdbResponse = await tmdbClient.get(`/tv/${tmdb_id}`);
-    const seriesDetails = tmdbResponse.data;
-    const title = seriesDetails.name;
-    const year = seriesDetails.first_air_date 
-      ? new Date(seriesDetails.first_air_date).getFullYear() 
-      : null;
-    
-    console.log(`📺 Series from TMDB: "${title}" (${year})`);
-    
-    // Try filters endpoint without country
-    const response = await streamingClient.get('/shows/search/filters', {
-      params: {
-        catalogs: 'netflix,prime,disney,hbo,apple,paramount,hulu,peacock',
-        show_type: 'series',
-        series_granularity: 'show',
-        output_language: 'fr'
-      }
-    });
-
-    const shows = response.data?.shows || [];
-    
-    if (shows.length === 0) {
-      return res.json({
-        found: false,
-        tmdb_id,
-        title_searched: title,
-        year,
-        message: 'No shows found with this title'
-      });
-    }
-    
-    // Find best match by year
-    let bestMatch = shows[0];
-    if (year) {
-      for (const show of shows) {
-        const showYear = show.firstAirYear || show.releaseYear;
-        if (showYear === year) {
-          bestMatch = show;
-          break;
-        }
-      }
-    }
-    
-    res.json({
-      found: true,
-      tmdb_id_input: tmdb_id,
-      title_searched: title,
-      year_searched: year,
-      total_results: shows.length,
-      best_match: {
-        title: bestMatch.title,
-        year: bestMatch.firstAirYear || bestMatch.releaseYear,
-        id: bestMatch.id,
-        tmdbId: bestMatch.tmdbId,
-        imdbId: bestMatch.imdbId,
-        streamingOptions: bestMatch.streamingOptions ? Object.keys(bestMatch.streamingOptions) : [],
-        total_countries: bestMatch.streamingOptions ? Object.keys(bestMatch.streamingOptions).length : 0,
-        has_data: !!bestMatch.streamingOptions
-      },
-      note: "✅ Search by title works! Data can be used directly."
-    });
-  } catch (error) {
-    console.error('Search debug error:', error);
-    res.status(500).json({ 
-      error: error.message,
-      response_data: error.response?.data 
-    });
-  }
-});
-
-// Debug endpoint - check series structure
-app.get('/api/debug-series/:tmdb_id', async (req, res) => {
-  try {
-    const tmdb_id = parseInt(req.params.tmdb_id);
-    
-    console.log(`🔍 DEBUG: Fetching series data for TMDB ID: ${tmdb_id}`);
-    
-    // Step 1: Get series details from TMDB
-    console.log(`Step 1: Getting series details from TMDB...`);
-    const tmdbResponse = await tmdbClient.get(`/tv/${tmdb_id}`);
-    const seriesDetails = tmdbResponse.data;
-    const title = seriesDetails.name;
-    const year = seriesDetails.first_air_date 
-      ? new Date(seriesDetails.first_air_date).getFullYear() 
-      : null;
-    
-    console.log(`📺 Series: "${title}" (${year})`);
-    
-    // Step 2: Search by title
-    console.log(`Step 2: Searching by title...`);
-    const showData = await searchShowByTitle(title, year, 'tv');
-    
-    if (!showData) {
-      return res.json({
-        error: 'Search failed',
-        tmdb_id,
-        title,
-        year,
-        step: 'search_failed',
-        suggestion: 'Series not found in Streaming Availability API'
-      });
-    }
-    
-    console.log(`✅ Found series data`);
-    
-    // Step 3: Show sample data
-    const streamingOptions = showData.streamingOptions || {};
-    
-    if (Object.keys(streamingOptions).length === 0) {
-      return res.json({
-        error: 'No streaming options',
-        tmdb_id,
-        title,
-        show_id: showData.id,
-        step: 'no_streaming_options',
-        suggestion: 'Series found but no streaming availability data'
-      });
-    }
-    
-    const sampleOptions = [];
-    for (const [country, options] of Object.entries(streamingOptions)) {
-      if (sampleOptions.length >= 5) break;
-      
-      for (const option of options.slice(0, 2)) {
-        sampleOptions.push({
-          country,
-          platform: option.service?.name,
-          type: option.type,
-          seasons: option.seasons,
-          has_seasons_array: Array.isArray(option.seasons),
-          seasons_length: option.seasons?.length || 0
-        });
-        if (sampleOptions.length >= 5) break;
-      }
-    }
-    
-    res.json({
-      success: true,
-      tmdb_id,
-      title,
-      year,
-      show_id: showData.id,
-      total_countries: Object.keys(streamingOptions).length,
-      sample_options: sampleOptions,
-      note: "Success! Series found by title search with streaming data."
-    });
-  } catch (error) {
-    console.error('Debug series error:', error);
-    res.status(500).json({ 
-      error: error.message, 
-      stack: error.stack,
-      response_data: error.response?.data 
-    });
-  }
-});
-
-// Test endpoint - try different series endpoint formats
-app.get('/api/test-series-endpoints/:tmdb_id', async (req, res) => {
-  try {
-    const tmdb_id = req.params.tmdb_id;
-    const results = {};
-    
-    // Test 1: /shows/tv/{tmdb_id} (like movies but tv)
-    try {
-      console.log(`Test 1: /shows/tv/${tmdb_id}`);
-      const r1 = await streamingClient.get(`/shows/tv/${tmdb_id}`, {
-        params: { output_language: 'fr', series_granularity: 'show' }
-      });
-      results.test1_shows_tv = {
-        success: true,
-        countries: r1.data.streamingOptions ? Object.keys(r1.data.streamingOptions).length : 0
-      };
-    } catch (e) {
-      results.test1_shows_tv = { success: false, error: e.response?.status || e.message };
-    }
-    
-    // Test 2: /shows/series/tv/{tmdb_id}
-    try {
-      console.log(`Test 2: /shows/series/tv/${tmdb_id}`);
-      const r2 = await streamingClient.get(`/shows/series/tv/${tmdb_id}`, {
-        params: { output_language: 'fr', series_granularity: 'show' }
-      });
-      results.test2_shows_series_tv = {
-        success: true,
-        countries: r2.data.streamingOptions ? Object.keys(r2.data.streamingOptions).length : 0
-      };
-    } catch (e) {
-      results.test2_shows_series_tv = { success: false, error: e.response?.status || e.message };
-    }
-    
-    // Test 3: /shows/{tmdb_id} with type param
-    try {
-      console.log(`Test 3: /shows/${tmdb_id}`);
-      const r3 = await streamingClient.get(`/shows/${tmdb_id}`, {
-        params: { output_language: 'fr', series_granularity: 'show', show_type: 'series' }
-      });
-      results.test3_shows_with_type = {
-        success: true,
-        countries: r3.data.streamingOptions ? Object.keys(r3.data.streamingOptions).length : 0
-      };
-    } catch (e) {
-      results.test3_shows_with_type = { success: false, error: e.response?.status || e.message };
-    }
-    
-    // Test 4: /shows/series/{tmdb_id} (direct number)
-    try {
-      console.log(`Test 4: /shows/series/${tmdb_id}`);
-      const r4 = await streamingClient.get(`/shows/series/${tmdb_id}`, {
-        params: { output_language: 'fr', series_granularity: 'show' }
-      });
-      results.test4_shows_series_number = {
-        success: true,
-        countries: r4.data.streamingOptions ? Object.keys(r4.data.streamingOptions).length : 0
-      };
-    } catch (e) {
-      results.test4_shows_series_number = { success: false, error: e.response?.status || e.message };
-    }
-    
-    res.json({
-      tmdb_id,
-      results,
-      note: "Testing different endpoint formats to find one that works like /shows/movie/{id}"
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Test endpoint - try fetching series directly with API ID
-app.get('/api/test-series-direct/:api_id', async (req, res) => {
-  try {
-    const api_id = req.params.api_id;
-    
-    console.log(`🧪 Testing direct series fetch with API ID: ${api_id}`);
-    
-    const response = await streamingClient.get(`/shows/series/${api_id}`, {
-      params: {
-        series_granularity: 'show',
-        output_language: 'fr'
-      }
-    });
-    
-    const data = response.data;
-    const countriesCount = data.streamingOptions ? Object.keys(data.streamingOptions).length : 0;
-    
-    res.json({
-      success: true,
-      api_id,
-      title: data.title,
-      total_countries: countriesCount,
-      countries: data.streamingOptions ? Object.keys(data.streamingOptions) : [],
-      note: "If this works, we can use direct fetch instead of search!"
-    });
-  } catch (error) {
-    res.status(error.response?.status || 500).json({
-      error: error.message,
-      status: error.response?.status,
-      data: error.response?.data
-    });
-  }
-});
-
-// Debug endpoint - check duplicates
-app.get('/api/debug-duplicates/:tmdb_id', async (req, res) => {
-  try {
-    const tmdb_id = parseInt(req.params.tmdb_id);
-    
-    // Get all entries for this movie
-    const result = await pool.query(
-      `SELECT tmdb_id, platform, country_code, country_name, streaming_type, addon_name, 
-              quality, has_french_audio, has_french_subtitles, streaming_url, 
-              created_at, updated_at
-       FROM availabilities 
-       WHERE tmdb_id = $1 
-       ORDER BY country_code, platform, streaming_type, addon_name`,
-      [tmdb_id]
-    );
-    
-    // Find duplicates (same country, platform, type, addon)
-    const seen = new Map();
-    const duplicates = [];
-    
-    result.rows.forEach(row => {
-      const key = `${row.country_code}-${row.platform}-${row.streaming_type}-${row.addon_name}`;
-      if (seen.has(key)) {
-        duplicates.push({
-          key,
-          first: seen.get(key),
-          duplicate: row
-        });
-      } else {
-        seen.set(key, row);
-      }
-    });
-    
-    res.json({
-      total_entries: result.rows.length,
-      unique_keys: seen.size,
-      duplicates_found: duplicates.length,
-      duplicates: duplicates,
-      sample_entries: result.rows.slice(0, 10)
-    });
-  } catch (error) {
-    console.error('Debug duplicates error:', error);
-    res.status(500).json({ error: error.message });
-  }
 });
 
 // Clear all cache
@@ -1024,263 +591,35 @@ app.get('/api/clear-cache/:tmdb_id', async (req, res) => {
   }
 });
 
-// RESET DATABASE ENDPOINT (for fixing table structure)
-app.get('/api/reset-database', async (req, res) => {
-  try {
-    console.log('🔄 Dropping old table...');
-    await pool.query('DROP TABLE IF EXISTS availabilities');
-    console.log('✅ Old table dropped!');
-    
-    console.log('🔨 Creating new table with correct structure...');
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS availabilities (
-        id SERIAL PRIMARY KEY,
-        tmdb_id INTEGER NOT NULL,
-        media_type VARCHAR(10) NOT NULL DEFAULT 'movie',
-        platform VARCHAR(50) NOT NULL,
-        country_code VARCHAR(10) NOT NULL,
-        country_name VARCHAR(100) NOT NULL,
-        streaming_type VARCHAR(20) NOT NULL DEFAULT 'subscription',
-        addon_name VARCHAR(100),
-        season_number INTEGER,
-        has_french_audio BOOLEAN DEFAULT false,
-        has_french_subtitles BOOLEAN DEFAULT false,
-        streaming_url TEXT,
-        quality VARCHAR(20),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(tmdb_id, media_type, platform, country_code, streaming_type, addon_name, quality, season_number)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_tmdb_platform ON availabilities(tmdb_id, platform);
-      CREATE INDEX IF NOT EXISTS idx_updated_at ON availabilities(updated_at);
-      CREATE INDEX IF NOT EXISTS idx_streaming_type ON availabilities(streaming_type);
-    `);
-    
-    console.log('✅ New table created successfully with streaming_type and addon_name support!');
-    res.json({ 
-      success: true, 
-      message: 'Database reset successfully! Table recreated with streaming_type and addon_name columns for VOD and addon support.' 
-    });
-  } catch (error) {
-    console.error('❌ Reset error:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// TEST ENDPOINT - Test Streaming Availability API
+// Test Streaming API
 app.get('/api/test-streaming-api', async (req, res) => {
   try {
-    // Test with Inception (TMDB ID: 27205)
-    const testTmdbId = '27205';
+    const testTmdbId = '27205'; // Inception
     
-    console.log(`🧪 Testing Streaming Availability API with TMDB ID: ${testTmdbId}`);
-    
-    // Check if API key is configured
     if (!process.env.RAPIDAPI_KEY) {
       return res.json({
         success: false,
-        error: 'RAPIDAPI_KEY is not configured in environment variables',
-        configured: {
-          TMDB_API_KEY: !!process.env.TMDB_API_KEY,
-          RAPIDAPI_KEY: !!process.env.RAPIDAPI_KEY,
-          DATABASE_URL: !!process.env.DATABASE_URL
-        }
+        error: 'RAPIDAPI_KEY is not configured'
       });
     }
 
     const response = await streamingClient.get(`/shows/movie/${testTmdbId}`, {
-      params: {
-        series_granularity: 'show',
-        output_language: 'fr'
-      }
+      params: { output_language: 'fr' }
     });
 
     const platformCount = Object.keys(response.data.streamingOptions || {}).length;
-    const platforms = {};
-    
-    // Count platforms
-    if (response.data.streamingOptions) {
-      for (const [country, countryPlatforms] of Object.entries(response.data.streamingOptions)) {
-        for (const platformData of countryPlatforms) {
-          const platform = platformData.service?.id || 'unknown';
-          platforms[platform] = (platforms[platform] || 0) + 1;
-        }
-      }
-    }
 
     res.json({
       success: true,
       message: 'API is working!',
-      test_movie: `Inception (TMDB ID: ${testTmdbId})`,
-      countries_found: platformCount,
-      platforms_found: platforms,
-      sample_data: response.data.streamingOptions ? Object.keys(response.data.streamingOptions).slice(0, 5) : [],
-      api_key_configured: true,
-      full_response_sample: response.data.streamingOptions ? 
-        Object.entries(response.data.streamingOptions).slice(0, 1).map(([country, options]) => ({
-          country,
-          options: options.slice(0, 2)
-        })) : []
+      test_movie: 'Inception',
+      countries_found: platformCount
     });
 
   } catch (error) {
-    console.error('❌ Test failed:', error.response?.data || error.message);
     res.status(500).json({
       success: false,
-      error: error.message,
-      error_details: error.response?.data,
-      api_key_configured: !!process.env.RAPIDAPI_KEY
-    });
-  }
-});
-
-// DEBUG ENDPOINT - Inspect subtitle data for a specific movie
-app.get('/api/debug-subtitles/:tmdb_id', async (req, res) => {
-  try {
-    const tmdbId = req.params.tmdb_id;
-    
-    console.log(`🔍 Debug: Fetching subtitle data for TMDB ID ${tmdbId}`);
-    
-    const response = await streamingClient.get(`/shows/movie/${tmdbId}`, {
-      params: {
-        series_granularity: 'show',
-        output_language: 'fr'
-      }
-    });
-
-    const subtitleData = [];
-    
-    if (response.data.streamingOptions) {
-      for (const [country, options] of Object.entries(response.data.streamingOptions)) {
-        for (const option of options) {
-          if (option.subtitles && option.subtitles.length > 0) {
-            subtitleData.push({
-              country,
-              platform: option.service?.name,
-              subtitles: option.subtitles,
-              audios: option.audios
-            });
-          }
-        }
-      }
-    }
-
-    res.json({
-      tmdb_id: tmdbId,
-      total_options: Object.values(response.data.streamingOptions || {}).flat().length,
-      options_with_subtitles: subtitleData.length,
-      subtitle_samples: subtitleData.slice(0, 10)
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-      details: error.response?.data
-    });
-  }
-});
-
-// DEBUG ENDPOINT - Check addon details
-app.get('/api/debug-addons/:tmdb_id', async (req, res) => {
-  try {
-    const tmdbId = req.params.tmdb_id;
-    
-    console.log(`🔍 Debug: Fetching addon details for TMDB ID ${tmdbId}`);
-    
-    const response = await streamingClient.get(`/shows/movie/${tmdbId}`, {
-      params: {
-        series_granularity: 'show',
-        output_language: 'fr'
-      }
-    });
-
-    const addonSamples = [];
-    
-    if (response.data.streamingOptions) {
-      for (const [country, options] of Object.entries(response.data.streamingOptions)) {
-        for (const option of options) {
-          if (option.type === 'addon') {
-            addonSamples.push({
-              country,
-              platform: option.service?.name || option.service?.id,
-              type: option.type,
-              addon: option.addon,
-              service: option.service,
-              full_option: option
-            });
-          }
-        }
-      }
-    }
-
-    res.json({
-      tmdb_id: tmdbId,
-      total_addons: addonSamples.length,
-      addon_samples: addonSamples.slice(0, 5),
-      note: "Look for 'addon' field to see addon name"
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-      details: error.response?.data
-    });
-  }
-});
-app.get('/api/debug-types/:tmdb_id', async (req, res) => {
-  try {
-    const tmdbId = req.params.tmdb_id;
-    
-    console.log(`🔍 Debug: Fetching streaming types for TMDB ID ${tmdbId}`);
-    
-    const response = await streamingClient.get(`/shows/movie/${tmdbId}`, {
-      params: {
-        series_granularity: 'show',
-        output_language: 'fr'
-      }
-    });
-
-    const typesSummary = {
-      subscription: 0,
-      rent: 0,
-      buy: 0,
-      free: 0,
-      addon: 0,
-      unknown: 0,
-      samples: []
-    };
-    
-    if (response.data.streamingOptions) {
-      for (const [country, options] of Object.entries(response.data.streamingOptions)) {
-        for (const option of options) {
-          const type = option.type || 'unknown';
-          typesSummary[type] = (typesSummary[type] || 0) + 1;
-          
-          if (typesSummary.samples.length < 10) {
-            typesSummary.samples.push({
-              country,
-              platform: option.service?.name || option.service?.id,
-              type: option.type,
-              hasType: !!option.type,
-              link: option.link
-            });
-          }
-        }
-      }
-    }
-
-    res.json({
-      tmdb_id: tmdbId,
-      total_options: Object.values(response.data.streamingOptions || {}).flat().length,
-      types_breakdown: typesSummary,
-      note: "If 'unknown' is high, the API might not provide 'type' field"
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      error: error.message,
-      details: error.response?.data
+      error: error.message
     });
   }
 });
@@ -1293,5 +632,4 @@ app.get('/health', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📊 Cache duration: ${CACHE_DURATION / (1000 * 60 * 60 * 24)} days`);
-  console.log(`🎬 Platforms supported: ${Object.values(PLATFORMS).join(', ')}`);
 });
