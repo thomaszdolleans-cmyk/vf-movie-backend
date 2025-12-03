@@ -17,29 +17,43 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// Initialize database
-pool.query(`
-  CREATE TABLE IF NOT EXISTS availabilities (
-    id SERIAL PRIMARY KEY,
-    tmdb_id INTEGER NOT NULL,
-    platform VARCHAR(50) NOT NULL,
-    country_code VARCHAR(10) NOT NULL,
-    country_name VARCHAR(100) NOT NULL,
-    streaming_type VARCHAR(20) NOT NULL DEFAULT 'subscription',
-    addon_name VARCHAR(100),
-    has_french_audio BOOLEAN DEFAULT false,
-    has_french_subtitles BOOLEAN DEFAULT false,
-    streaming_url TEXT,
-    quality VARCHAR(20),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(tmdb_id, platform, country_code, streaming_type, addon_name)
-  );
+// Initialize database with proper constraints
+async function initDatabase() {
+  try {
+    // Drop old table to fix constraint issues
+    await pool.query(`DROP TABLE IF EXISTS availabilities`);
+    
+    // Create table with addon_name defaulting to empty string (not NULL)
+    await pool.query(`
+      CREATE TABLE availabilities (
+        id SERIAL PRIMARY KEY,
+        tmdb_id INTEGER NOT NULL,
+        platform VARCHAR(50) NOT NULL,
+        country_code VARCHAR(10) NOT NULL,
+        country_name VARCHAR(100) NOT NULL,
+        streaming_type VARCHAR(20) NOT NULL DEFAULT 'subscription',
+        addon_name VARCHAR(100) NOT NULL DEFAULT '',
+        has_french_audio BOOLEAN DEFAULT false,
+        has_french_subtitles BOOLEAN DEFAULT false,
+        streaming_url TEXT,
+        quality VARCHAR(20),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(tmdb_id, platform, country_code, streaming_type, addon_name)
+      )
+    `);
 
-  CREATE INDEX IF NOT EXISTS idx_tmdb_platform ON availabilities(tmdb_id, platform);
-  CREATE INDEX IF NOT EXISTS idx_updated_at ON availabilities(updated_at);
-  CREATE INDEX IF NOT EXISTS idx_streaming_type ON availabilities(streaming_type);
-`).catch(err => console.error('Database initialization error:', err));
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_tmdb_platform ON availabilities(tmdb_id, platform)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_updated_at ON availabilities(updated_at)`);
+    
+    console.log('✅ Database initialized successfully');
+  } catch (err) {
+    console.error('Database initialization error:', err);
+  }
+}
+
+// Initialize on startup
+initDatabase();
 
 // TMDB API client
 const tmdbClient = axios.create({
@@ -83,7 +97,7 @@ const PLATFORMS = {
   'canal': 'Canal+'
 };
 
-// Country name mapping (complete list)
+// Country name mapping
 function getCountryName(code) {
   const countries = {
     'AD': 'Andorre', 'AE': 'Émirats arabes unis', 'AF': 'Afghanistan', 'AG': 'Antigua-et-Barbuda',
@@ -147,7 +161,7 @@ function getCountryName(code) {
 const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
 // Fetch streaming availability from Streaming Availability API
-async function fetchStreamingAvailability(tmdbId, mediaType = 'movie', mediaDetails = null) {
+async function fetchStreamingAvailability(tmdbId, mediaType = 'movie') {
   try {
     const showType = mediaType === 'tv' ? 'tv' : 'movie';
     const endpoint = `/shows/${showType}/${tmdbId}`;
@@ -200,7 +214,8 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
       const platformKey = option.service.id;
       const platformName = PLATFORMS[platformKey] || option.service.name || platformKey;
       const streamingType = option.type || 'subscription';
-      const addonName = streamingType === 'addon' && option.addon?.name ? option.addon.name : null;
+      // Use empty string instead of null for addon_name (fixes UNIQUE constraint issue)
+      const addonName = (streamingType === 'addon' && option.addon?.name) ? option.addon.name : '';
       
       // FILTER: Skip Prime addons except Starz and MGM
       if (platformKey === 'prime' && streamingType === 'addon') {
@@ -331,20 +346,15 @@ app.get('/api/genres', async (req, res) => {
 });
 
 // Discover movies and TV series with filters
-// FIXED: Now accepts both "genre" and "with_genres" parameters
-// FIXED: Now accepts both "year" and "primary_release_year"/"first_air_date_year" parameters
 app.get('/api/discover', async (req, res) => {
   try {
     const { 
       type = 'movie',
-      // Accept multiple parameter names for genre
       genre,
       with_genres,
-      // Accept multiple parameter names for year  
       year,
       primary_release_year,
       first_air_date_year,
-      // Sort parameter - accept both formats
       sort,
       sort_by,
       page = 1 
@@ -353,25 +363,19 @@ app.get('/api/discover', async (req, res) => {
     const mediaType = type === 'tv' ? 'tv' : 'movie';
     const endpoint = `/discover/${mediaType}`;
 
-    // Use whichever genre parameter was provided
     const genreFilter = genre || with_genres;
-    
-    // Use whichever year parameter was provided
     const yearFilter = year || primary_release_year || first_air_date_year;
     
-    // Parse sort parameter (handle both "popularity" and "popularity.desc" formats)
     let sortValue = sort || sort_by || 'popularity';
     if (sortValue.includes('.')) {
-      sortValue = sortValue.split('.')[0]; // Extract "popularity" from "popularity.desc"
+      sortValue = sortValue.split('.')[0];
     }
 
-    // Build params
     const params = {
       page: parseInt(page),
       'vote_count.gte': 100,
     };
 
-    // Sort options
     const sortMap = {
       'popularity': 'popularity.desc',
       'vote_average': 'vote_average.desc',
@@ -380,12 +384,10 @@ app.get('/api/discover', async (req, res) => {
     };
     params.sort_by = sortMap[sortValue] || 'popularity.desc';
 
-    // Genre filter
     if (genreFilter) {
       params.with_genres = genreFilter;
     }
 
-    // Year filter
     if (yearFilter) {
       if (mediaType === 'movie') {
         params.primary_release_year = yearFilter;
@@ -521,7 +523,7 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
     // Fetch fresh data
     const title = mediaType === 'movie' ? mediaDetails.title : mediaDetails.name;
     console.log(`🔍 Fetching streaming data for "${title}"`);
-    const streamingData = await fetchStreamingAvailability(tmdb_id, mediaType, mediaDetails);
+    const streamingData = await fetchStreamingAvailability(tmdb_id, mediaType);
 
     if (!streamingData) {
       return res.json({ 
