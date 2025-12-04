@@ -195,6 +195,25 @@ function getCountryName(code) {
 // Cache duration: 7 days
 const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
+// Sort availabilities with priority countries first (FR, BE, CH, LU, CA)
+function sortByPriorityCountries(availabilities) {
+  return availabilities.sort((a, b) => {
+    const aIdx = PRIORITY_COUNTRIES.indexOf(a.country_code);
+    const bIdx = PRIORITY_COUNTRIES.indexOf(b.country_code);
+    
+    // Both are priority countries - sort by priority order
+    if (aIdx !== -1 && bIdx !== -1) {
+      return aIdx - bIdx;
+    }
+    // Only a is priority - a comes first
+    if (aIdx !== -1) return -1;
+    // Only b is priority - b comes first
+    if (bIdx !== -1) return 1;
+    // Neither is priority - sort alphabetically by country name
+    return (a.country_name || '').localeCompare(b.country_name || '', 'fr');
+  });
+}
+
 // ============================================
 // TMDB WATCH PROVIDERS (NEW!)
 // ============================================
@@ -722,12 +741,15 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
           console.log(`✅ Using cached data (${Math.round(cacheAge / (1000 * 60 * 60))} hours old)`);
 
           const cached = await pool.query(
-            'SELECT * FROM availabilities WHERE tmdb_id = $1 AND media_type = $2 ORDER BY platform, country_name, season_number',
+            'SELECT * FROM availabilities WHERE tmdb_id = $1 AND media_type = $2',
             [tmdb_id, mediaType]
           );
 
+          // Sort with priority countries first
+          const sortedResults = sortByPriorityCountries(cached.rows);
+
           return res.json({ 
-            availabilities: cached.rows,
+            availabilities: sortedResults,
             media: mediaInfo,
             cached: true,
             sources: ['cache']
@@ -742,8 +764,11 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
     // Cache the results
     await cacheAvailabilities(tmdb_id, availabilities, mediaType);
 
+    // Sort with priority countries first
+    const sortedResults = sortByPriorityCountries(availabilities);
+
     res.json({ 
-      availabilities,
+      availabilities: sortedResults,
       media: mediaInfo,
       cached: false,
       sources: ['streaming-availability', 'tmdb-watch-providers']
