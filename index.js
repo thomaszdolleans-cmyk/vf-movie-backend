@@ -20,24 +20,25 @@ const pool = new Pool({
 // Priority countries (French-speaking) - will appear first in results
 const PRIORITY_COUNTRIES = ['FR', 'BE', 'CH', 'LU', 'CA'];
 
+// French-speaking countries - less strict filtering for these
+const FRENCH_SPEAKING_COUNTRIES = ['FR', 'BE', 'CH', 'LU', 'CA', 'MC', 'SN', 'CI', 'ML', 'MG', 'CM', 'HT'];
+
 // Initialize database with proper constraints
 async function initDatabase() {
   try {
-    // Check if table exists and has correct structure
     const tableCheck = await pool.query(`
       SELECT column_name FROM information_schema.columns 
       WHERE table_name = 'availabilities' AND column_name = 'addon_name'
     `);
     
     if (tableCheck.rows.length === 0) {
-      // Table doesn't exist or is missing columns - recreate it
       await pool.query(`DROP TABLE IF EXISTS availabilities`);
       
       await pool.query(`
         CREATE TABLE availabilities (
           id SERIAL PRIMARY KEY,
           tmdb_id INTEGER NOT NULL,
-          platform VARCHAR(50) NOT NULL,
+          platform VARCHAR(100) NOT NULL,
           country_code VARCHAR(10) NOT NULL,
           country_name VARCHAR(100) NOT NULL,
           streaming_type VARCHAR(20) NOT NULL DEFAULT 'subscription',
@@ -65,7 +66,6 @@ async function initDatabase() {
   }
 }
 
-// Initialize on startup
 initDatabase();
 
 // TMDB API client
@@ -86,28 +86,115 @@ const streamingClient = axios.create({
   }
 });
 
-// Platform mapping
+// ============================================
+// EXTENDED Platform mapping - ALL known services
+// ============================================
 const PLATFORMS = {
+  // Major international platforms
   'netflix': 'Netflix',
   'prime': 'Amazon Prime',
+  'amazon': 'Amazon Prime',
+  'amazonprime': 'Amazon Prime',
   'disney': 'Disney+',
-  'hbo': 'HBO Max',
+  'disneyplus': 'Disney+',
+  'hbo': 'Max',
+  'hbomax': 'Max',
+  'max': 'Max',
   'apple': 'Apple TV+',
+  'appletv': 'Apple TV+',
+  'appletvplus': 'Apple TV+',
+  
+  // Paramount
   'paramount': 'Paramount+',
+  'paramountplus': 'Paramount+',
+  'paramountplusamazon': 'Paramount+',
+  
+  // Canal+ family (French)
+  'canal': 'Canal+',
+  'canalplus': 'Canal+',
+  'mycanal': 'Canal+',
+  'canalplusseries': 'Canal+ Séries',
+  'canalpluscine': 'Canal+ Cinéma',
+  'canalpluspremier': 'Canal+ Premier',
+  
+  // French platforms
+  'ocs': 'OCS',
+  'orange': 'Orange VOD',
+  'francetv': 'France TV',
+  'salto': 'Salto',
+  'arte': 'Arte',
+  'tf1plus': 'TF1+',
+  'tf1': 'TF1+',
+  'm6plus': 'M6+',
+  'm6': 'M6+',
+  'molotov': 'Molotov',
+  'pass': 'Pass Warner',
+  'passwarner': 'Pass Warner',
+  
+  // US platforms
   'peacock': 'Peacock',
   'hulu': 'Hulu',
-  'mubi': 'MUBI',
-  'stan': 'Stan',
+  'showtime': 'Showtime',
+  'starz': 'Starz',
+  'mgm': 'MGM+',
+  'mgmplus': 'MGM+',
+  'epix': 'MGM+',
+  'amc': 'AMC+',
+  'amcplus': 'AMC+',
+  'criterion': 'Criterion Channel',
+  'criterionchannel': 'Criterion Channel',
+  
+  // UK platforms
   'now': 'NOW',
-  'crave': 'Crave',
-  'all4': 'Channel 4',
+  'nowtv': 'NOW TV',
+  'sky': 'Sky',
+  'skygo': 'Sky Go',
   'iplayer': 'BBC iPlayer',
+  'bbc': 'BBC iPlayer',
+  'bbciplayer': 'BBC iPlayer',
   'britbox': 'BritBox',
-  'hotstar': 'Disney+ Hotstar',
-  'zee5': 'Zee5',
+  'all4': 'Channel 4',
+  'channel4': 'Channel 4',
+  'itv': 'ITVX',
+  'itvx': 'ITVX',
+  
+  // Canadian
+  'crave': 'Crave',
+  'tubi': 'Tubi',
+  
+  // Specialty/Niche
+  'mubi': 'MUBI',
   'curiosity': 'CuriosityStream',
+  'curiositystream': 'CuriosityStream',
   'wow': 'WOW',
-  'canal': 'Canal+'
+  'stan': 'Stan',
+  'hotstar': 'Disney+ Hotstar',
+  'disneyhotstar': 'Disney+ Hotstar',
+  'zee5': 'Zee5',
+  
+  // Anime
+  'crunchyroll': 'Crunchyroll',
+  'funimation': 'Funimation',
+  'adn': 'ADN',
+  'wakanim': 'Wakanim',
+  
+  // Free/Ad-supported
+  'pluto': 'Pluto TV',
+  'plutotv': 'Pluto TV',
+  'freevee': 'Freevee',
+  'imdbfreevee': 'Freevee',
+  'roku': 'Roku Channel',
+  'rokuchannel': 'Roku Channel',
+  'plex': 'Plex',
+  
+  // VOD/Purchase platforms
+  'vudu': 'Vudu',
+  'googleplay': 'Google Play',
+  'google': 'Google Play',
+  'itunes': 'iTunes',
+  'youtube': 'YouTube',
+  'youtubepremium': 'YouTube Premium',
+  'microsoft': 'Microsoft Store'
 };
 
 // Country name mapping
@@ -170,21 +257,36 @@ function getCountryName(code) {
   return countries[code] || code;
 }
 
+// Get platform name from service ID (with fallback)
+function getPlatformName(serviceId, serviceName) {
+  if (!serviceId) return serviceName || 'Unknown';
+  
+  // Normalize: lowercase and remove special chars
+  const normalizedId = serviceId.toLowerCase().replace(/[^a-z0-9]/g, '');
+  
+  // Check our mapping
+  if (PLATFORMS[normalizedId]) {
+    return PLATFORMS[normalizedId];
+  }
+  
+  // Check original ID
+  if (PLATFORMS[serviceId.toLowerCase()]) {
+    return PLATFORMS[serviceId.toLowerCase()];
+  }
+  
+  // Fallback to provided name or capitalize the ID
+  return serviceName || serviceId.charAt(0).toUpperCase() + serviceId.slice(1);
+}
+
 // Sort availabilities with priority countries first
 function sortAvailabilities(availabilities) {
   return availabilities.sort((a, b) => {
     const aIndex = PRIORITY_COUNTRIES.indexOf(a.country_code);
     const bIndex = PRIORITY_COUNTRIES.indexOf(b.country_code);
     
-    // Both are priority countries - sort by priority order
-    if (aIndex !== -1 && bIndex !== -1) {
-      return aIndex - bIndex;
-    }
-    // Only a is priority - a comes first
+    if (aIndex !== -1 && bIndex !== -1) return aIndex - bIndex;
     if (aIndex !== -1) return -1;
-    // Only b is priority - b comes first
     if (bIndex !== -1) return 1;
-    // Neither is priority - sort alphabetically by country name
     return a.country_name.localeCompare(b.country_name, 'fr');
   });
 }
@@ -221,6 +323,31 @@ async function fetchStreamingAvailability(tmdbId, mediaType = 'movie') {
   }
 }
 
+// Check if audio/subtitle has French
+function hasFrench(items) {
+  if (!items || !Array.isArray(items)) return false;
+  
+  return items.some(item => {
+    if (!item) return false;
+    
+    // Check direct language property
+    const lang = item.language ? String(item.language).toLowerCase() : '';
+    if (lang === 'fra' || lang === 'fr' || lang === 'fre' || lang === 'french') {
+      return true;
+    }
+    
+    // Check locale.language (some API responses use this structure)
+    if (item.locale?.language) {
+      const localeLang = String(item.locale.language).toLowerCase();
+      if (localeLang === 'fra' || localeLang === 'fr' || localeLang === 'fre' || localeLang === 'french') {
+        return true;
+      }
+    }
+    
+    return false;
+  });
+}
+
 // Process and cache streaming data
 async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movie') {
   if (!streamingData || !streamingData.streamingOptions) {
@@ -234,47 +361,52 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
   // Delete old cache for this item
   await pool.query('DELETE FROM availabilities WHERE tmdb_id = $1', [tmdbId]);
 
+  // Log all services for debugging
+  const allServices = new Set();
+
   // Process each country
   for (const [countryCode, options] of Object.entries(streamingOptions)) {
     const country = countryCode.toUpperCase();
     const countryName = getCountryName(country);
+    const isFrenchSpeakingCountry = FRENCH_SPEAKING_COUNTRIES.includes(country);
 
     // Process each streaming option in this country
     for (const option of options) {
       if (!option || !option.service) continue;
 
-      const platformKey = option.service.id;
-      const platformName = PLATFORMS[platformKey] || option.service.name || platformKey;
+      const serviceId = option.service.id;
+      const serviceName = option.service.name;
+      allServices.add(`${serviceId} (${serviceName})`);
+      
+      const platformName = getPlatformName(serviceId, serviceName);
       const streamingType = option.type || 'subscription';
-      // Use empty string instead of null for addon_name (fixes UNIQUE constraint issue)
       const addonName = (streamingType === 'addon' && option.addon?.name) ? option.addon.name : '';
       
-      // FILTER: Skip Prime addons except Starz and MGM
-      if (platformKey === 'prime' && streamingType === 'addon') {
-        const allowedPrimeAddons = ['Starz', 'MGM+', 'MGM Plus', 'MGM', 'STARZ'];
+      // FILTER: Skip most Prime addons (too many irrelevant ones)
+      if (serviceId === 'prime' && streamingType === 'addon') {
+        const allowedPrimeAddons = ['Starz', 'MGM+', 'MGM Plus', 'MGM', 'STARZ', 'Paramount+', 'Paramount', 'OCS'];
         if (!addonName || !allowedPrimeAddons.some(allowed => addonName.toLowerCase().includes(allowed.toLowerCase()))) {
           continue;
         }
       }
 
       // Check for French audio and subtitles
-      const hasFrenchAudio = option.audios?.some(a => {
-        const lang = a.language?.toLowerCase();
-        return lang === 'fra' || lang === 'fr' || lang === 'fre';
-      }) || false;
+      const hasFrenchAudio = hasFrench(option.audios);
+      const hasFrenchSubtitles = hasFrench(option.subtitles);
 
-      const hasFrenchSubtitles = option.subtitles?.some(s => {
-        if (!s) return false;
-        const lang = s.language ? String(s.language).toLowerCase() : '';
-        const localeLanguage = s.locale?.language ? String(s.locale.language).toLowerCase() : '';
-        return lang === 'fra' || lang === 'fr' || lang === 'fre' || 
-               localeLanguage === 'fra' || localeLanguage === 'fr' || localeLanguage === 'fre';
-      }) || false;
-
-      // FILTER: Skip if no French content
-      if (!hasFrenchAudio && !hasFrenchSubtitles) {
+      // ============================================
+      // RELAXED FILTER for French-speaking countries
+      // ============================================
+      // For FR, BE, CH, CA, LU: Include ALL content (assume French is available)
+      // For other countries: Require French audio OR subtitles
+      
+      if (!isFrenchSpeakingCountry && !hasFrenchAudio && !hasFrenchSubtitles) {
         continue;
       }
+
+      // For French-speaking countries, assume French is available if not explicitly detected
+      const finalHasFrenchAudio = hasFrenchAudio || isFrenchSpeakingCountry;
+      const finalHasFrenchSubtitles = hasFrenchSubtitles;
 
       const availability = {
         tmdb_id: tmdbId,
@@ -283,8 +415,8 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
         country_name: countryName,
         streaming_type: streamingType,
         addon_name: addonName,
-        has_french_audio: hasFrenchAudio,
-        has_french_subtitles: hasFrenchSubtitles,
+        has_french_audio: finalHasFrenchAudio,
+        has_french_subtitles: finalHasFrenchSubtitles,
         streaming_url: option.link || null,
         quality: option.quality || 'hd'
       };
@@ -300,7 +432,7 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
             has_french_subtitles = $8,
             streaming_url = $9,
             updated_at = CURRENT_TIMESTAMP`,
-          [tmdbId, platformName, country, countryName, streamingType, addonName, hasFrenchAudio, hasFrenchSubtitles, option.link, option.quality || 'hd']
+          [tmdbId, platformName, country, countryName, streamingType, addonName, finalHasFrenchAudio, finalHasFrenchSubtitles, option.link, option.quality || 'hd']
         );
         availabilities.push(availability);
       } catch (dbError) {
@@ -309,11 +441,54 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
     }
   }
 
+  console.log(`📋 All services found: ${Array.from(allServices).join(', ')}`);
   console.log(`✅ Cached ${availabilities.length} availabilities for TMDB ID ${tmdbId}`);
   return sortAvailabilities(availabilities);
 }
 
-// Routes
+// ============================================
+// ROUTES
+// ============================================
+
+// DEBUG: Get raw streaming data (useful for debugging missing platforms)
+app.get('/api/debug/:type/:id', async (req, res) => {
+  try {
+    const tmdbId = parseInt(req.params.id);
+    const mediaType = req.params.type;
+    
+    const streamingData = await fetchStreamingAvailability(tmdbId, mediaType);
+    
+    if (!streamingData) {
+      return res.json({ error: 'No data found', tmdbId, mediaType });
+    }
+
+    // Extract detailed service info for each country
+    const services = {};
+    if (streamingData.streamingOptions) {
+      for (const [country, options] of Object.entries(streamingData.streamingOptions)) {
+        services[country] = options.map(opt => ({
+          serviceId: opt.service?.id,
+          serviceName: opt.service?.name,
+          type: opt.type,
+          addon: opt.addon?.name,
+          audios: opt.audios,
+          subtitles: opt.subtitles,
+          link: opt.link
+        }));
+      }
+    }
+
+    res.json({
+      tmdbId,
+      mediaType,
+      title: streamingData.title,
+      countriesCount: Object.keys(streamingData.streamingOptions || {}).length,
+      services
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Get list of available countries (for filter dropdown)
 app.get('/api/countries', async (req, res) => {
@@ -324,7 +499,6 @@ app.get('/api/countries', async (req, res) => {
       ORDER BY country_name
     `);
     
-    // Sort with priority countries first
     const countries = result.rows.sort((a, b) => {
       const aIndex = PRIORITY_COUNTRIES.indexOf(a.country_code);
       const bIndex = PRIORITY_COUNTRIES.indexOf(b.country_code);
@@ -377,6 +551,7 @@ app.get('/api/search', async (req, res) => {
               ? (item.release_date ? new Date(item.release_date).getFullYear() : null)
               : (item.first_air_date ? new Date(item.first_air_date).getFullYear() : null),
             poster: item.poster_path ? `https://image.tmdb.org/t/p/w200${item.poster_path}` : null,
+            vote_average: item.vote_average,
             availability_count: parseInt(countResult.rows[0].count) || 0
           };
         })
@@ -528,12 +703,12 @@ app.get('/api/trending', async (req, res) => {
 });
 
 // Get media availability (movies and TV series)
-// Supports filtering by country: ?country=FR or ?country=FR,BE,CH
 app.get('/api/media/:type/:id/availability', async (req, res) => {
   try {
     const tmdb_id = parseInt(req.params.id);
     const mediaType = req.params.type;
-    const countryFilter = req.query.country; // Optional: "FR" or "FR,BE,CH"
+    const countryFilter = req.query.country;
+    const forceRefresh = req.query.refresh === 'true';
 
     if (mediaType !== 'movie' && mediaType !== 'tv') {
       return res.status(400).json({ error: 'Invalid media type. Must be "movie" or "tv"' });
@@ -544,7 +719,6 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
     const mediaResponse = await tmdbClient.get(endpoint);
     const mediaDetails = mediaResponse.data;
 
-    // Build media info object
     const mediaInfo = {
       media_type: mediaType,
       title: mediaType === 'movie' ? mediaDetails.title : mediaDetails.name,
@@ -559,38 +733,37 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
       number_of_seasons: mediaType === 'tv' ? mediaDetails.number_of_seasons : null
     };
 
-    // Check cache
-    const cacheCheck = await pool.query(
-      'SELECT updated_at FROM availabilities WHERE tmdb_id = $1 ORDER BY updated_at DESC LIMIT 1',
-      [tmdb_id]
-    );
+    // Check cache (unless force refresh)
+    if (!forceRefresh) {
+      const cacheCheck = await pool.query(
+        'SELECT updated_at FROM availabilities WHERE tmdb_id = $1 ORDER BY updated_at DESC LIMIT 1',
+        [tmdb_id]
+      );
 
-    let availabilities = [];
+      if (cacheCheck.rows.length > 0) {
+        const cacheAge = Date.now() - new Date(cacheCheck.rows[0].updated_at).getTime();
 
-    if (cacheCheck.rows.length > 0) {
-      const cacheAge = Date.now() - new Date(cacheCheck.rows[0].updated_at).getTime();
+        if (cacheAge < CACHE_DURATION) {
+          console.log(`✅ Using cached data for "${mediaInfo.title}"`);
 
-      if (cacheAge < CACHE_DURATION) {
-        console.log(`✅ Using cached data for "${mediaInfo.title}"`);
+          let query = 'SELECT * FROM availabilities WHERE tmdb_id = $1';
+          const params = [tmdb_id];
 
-        // Build query with optional country filter
-        let query = 'SELECT * FROM availabilities WHERE tmdb_id = $1';
-        const params = [tmdb_id];
+          if (countryFilter) {
+            const countries = countryFilter.toUpperCase().split(',').map(c => c.trim());
+            query += ` AND country_code = ANY($2)`;
+            params.push(countries);
+          }
 
-        if (countryFilter) {
-          const countries = countryFilter.toUpperCase().split(',').map(c => c.trim());
-          query += ` AND country_code = ANY($2)`;
-          params.push(countries);
+          const cached = await pool.query(query, params);
+          
+          return res.json({ 
+            availabilities: sortAvailabilities(cached.rows),
+            media: mediaInfo,
+            available_countries: await getAvailableCountries(tmdb_id),
+            cached: true
+          });
         }
-
-        const cached = await pool.query(query, params);
-        availabilities = sortAvailabilities(cached.rows);
-
-        return res.json({ 
-          availabilities,
-          media: mediaInfo,
-          available_countries: await getAvailableCountries(tmdb_id)
-        });
       }
     }
 
@@ -602,11 +775,12 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
       return res.json({ 
         availabilities: [],
         media: mediaInfo,
-        available_countries: []
+        available_countries: [],
+        cached: false
       });
     }
 
-    availabilities = await processAndCacheStreaming(tmdb_id, streamingData, mediaType);
+    let availabilities = await processAndCacheStreaming(tmdb_id, streamingData, mediaType);
 
     // Apply country filter if specified
     if (countryFilter) {
@@ -617,7 +791,8 @@ app.get('/api/media/:type/:id/availability', async (req, res) => {
     res.json({ 
       availabilities: sortAvailabilities(availabilities),
       media: mediaInfo,
-      available_countries: await getAvailableCountries(tmdb_id)
+      available_countries: await getAvailableCountries(tmdb_id),
+      cached: false
     });
 
   } catch (error) {
@@ -635,7 +810,6 @@ async function getAvailableCountries(tmdbId) {
     ORDER BY country_name
   `, [tmdbId]);
   
-  // Sort with priority countries first
   return result.rows.sort((a, b) => {
     const aIndex = PRIORITY_COUNTRIES.indexOf(a.country_code);
     const bIndex = PRIORITY_COUNTRIES.indexOf(b.country_code);
@@ -714,4 +888,5 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📊 Cache duration: ${CACHE_DURATION / (1000 * 60 * 60 * 24)} days`);
   console.log(`🇫🇷 Priority countries: ${PRIORITY_COUNTRIES.join(', ')}`);
+  console.log(`📺 Platforms mapped: ${Object.keys(PLATFORMS).length}`);
 });
