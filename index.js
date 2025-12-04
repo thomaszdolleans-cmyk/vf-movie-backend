@@ -382,12 +382,16 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
       const streamingType = option.type || 'subscription';
       const addonName = (streamingType === 'addon' && option.addon?.name) ? option.addon.name : '';
       
-      // FILTER: Skip most Prime addons (too many irrelevant ones)
-      // But KEEP important ones like Paramount+, Starz, MGM+, OCS, Crave, Lionsgate+
-      if (serviceId === 'prime' && streamingType === 'addon') {
+      // FILTER: Skip most Prime/Apple addons (too many irrelevant ones)
+      // But KEEP important ones like Canal+, Paramount+, Starz, MGM+, OCS, Crave, Lionsgate+
+      if (streamingType === 'addon') {
         const addonLower = addonName.toLowerCase();
         const allowedPatterns = [
-          'starz', 'mgm', 'paramount', 'ocs', 'crave', 'lionsgate', 'max', 'hbo'
+          'canal', 'mycanal', 'canalplus', 'canal+',  // Canal+ family
+          'paramount',                                  // Paramount+
+          'starz', 'mgm', 'ocs', 'crave', 'lionsgate', // Other premium
+          'max', 'hbo',                                 // Max/HBO
+          'pass warner', 'passwarner'                   // Pass Warner (France)
         ];
         const isAllowed = allowedPatterns.some(pattern => addonLower.includes(pattern));
         if (!isAllowed) {
@@ -400,7 +404,9 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
       if (streamingType === 'addon' && addonName) {
         // Map addon IDs to proper platform names
         const addonLower = addonName.toLowerCase();
-        if (addonLower.includes('paramount')) {
+        if (addonLower.includes('canal') || addonLower.includes('mycanal')) {
+          finalPlatformName = 'Canal+';
+        } else if (addonLower.includes('paramount')) {
           finalPlatformName = 'Paramount+';
         } else if (addonLower.includes('starz')) {
           finalPlatformName = 'Starz';
@@ -416,6 +422,8 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
           finalPlatformName = 'OCS';
         } else if (addonLower.includes('skyshowtime')) {
           finalPlatformName = 'SkyShowtime';
+        } else if (addonLower.includes('pass warner') || addonLower.includes('passwarner')) {
+          finalPlatformName = 'Pass Warner';
         }
         // For addons, change type to subscription since that's what users care about
         // They want to know they can watch on Paramount+, not that it's an "addon"
