@@ -383,11 +383,42 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
       const addonName = (streamingType === 'addon' && option.addon?.name) ? option.addon.name : '';
       
       // FILTER: Skip most Prime addons (too many irrelevant ones)
+      // But KEEP important ones like Paramount+, Starz, MGM+, OCS, Crave, Lionsgate+
       if (serviceId === 'prime' && streamingType === 'addon') {
-        const allowedPrimeAddons = ['Starz', 'MGM+', 'MGM Plus', 'MGM', 'STARZ', 'Paramount+', 'Paramount', 'OCS'];
-        if (!addonName || !allowedPrimeAddons.some(allowed => addonName.toLowerCase().includes(allowed.toLowerCase()))) {
+        const addonLower = addonName.toLowerCase();
+        const allowedPatterns = [
+          'starz', 'mgm', 'paramount', 'ocs', 'crave', 'lionsgate', 'max', 'hbo'
+        ];
+        const isAllowed = allowedPatterns.some(pattern => addonLower.includes(pattern));
+        if (!isAllowed) {
           continue;
         }
+      }
+      
+      // For Prime/Apple addons that are actually streaming services, use the addon name as platform
+      let finalPlatformName = platformName;
+      if (streamingType === 'addon' && addonName) {
+        // Map addon IDs to proper platform names
+        const addonLower = addonName.toLowerCase();
+        if (addonLower.includes('paramount')) {
+          finalPlatformName = 'Paramount+';
+        } else if (addonLower.includes('starz')) {
+          finalPlatformName = 'Starz';
+        } else if (addonLower.includes('mgm')) {
+          finalPlatformName = 'MGM+';
+        } else if (addonLower.includes('lionsgate')) {
+          finalPlatformName = 'Lionsgate+';
+        } else if (addonLower.includes('crave')) {
+          finalPlatformName = 'Crave';
+        } else if (addonLower.includes('max') || addonLower.includes('hbo')) {
+          finalPlatformName = 'Max';
+        } else if (addonLower.includes('ocs')) {
+          finalPlatformName = 'OCS';
+        } else if (addonLower.includes('skyshowtime')) {
+          finalPlatformName = 'SkyShowtime';
+        }
+        // For addons, change type to subscription since that's what users care about
+        // They want to know they can watch on Paramount+, not that it's an "addon"
       }
 
       // Check for French audio and subtitles
@@ -410,7 +441,7 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
 
       const availability = {
         tmdb_id: tmdbId,
-        platform: platformName,
+        platform: finalPlatformName,
         country_code: country,
         country_name: countryName,
         streaming_type: streamingType,
@@ -432,7 +463,7 @@ async function processAndCacheStreaming(tmdbId, streamingData, mediaType = 'movi
             has_french_subtitles = $8,
             streaming_url = $9,
             updated_at = CURRENT_TIMESTAMP`,
-          [tmdbId, platformName, country, countryName, streamingType, addonName, finalHasFrenchAudio, finalHasFrenchSubtitles, option.link, option.quality || 'hd']
+          [tmdbId, finalPlatformName, country, countryName, streamingType, addonName, finalHasFrenchAudio, finalHasFrenchSubtitles, option.link, option.quality || 'hd']
         );
         availabilities.push(availability);
       } catch (dbError) {
