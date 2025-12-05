@@ -87,7 +87,7 @@ const PLATFORMS = {
   'canal': 'Canal+'
 };
 
-// TMDB Provider ID to Platform Name mapping (NEW!)
+// TMDB Provider ID to Platform Name mapping
 const TMDB_PROVIDER_NAMES = {
   8: 'Netflix',
   9: 'Amazon Prime',
@@ -195,6 +195,58 @@ function getCountryName(code) {
 // Cache duration: 7 days
 const CACHE_DURATION = 7 * 24 * 60 * 60 * 1000;
 
+// ============================================
+// PLATFORM NAME NORMALIZATION
+// ============================================
+/**
+ * Normalise les noms de plateformes pour éviter les doublons
+ * Netflix with ads → Netflix
+ * Crave CA / Crave Amazon Channel → Crave
+ * etc.
+ */
+function normalizePlatformName(platformName) {
+  const name = platformName.toLowerCase();
+  
+  // Netflix variants (Netflix, Netflix with ads, Netflix basic with ads, etc.)
+  if (name.includes('netflix')) return 'Netflix';
+  
+  // Crave variants (Crave, CraveCa, Crave Amazon Channel, etc.)
+  if (name.includes('crave')) return 'Crave';
+  
+  // Amazon Prime variants
+  if (name.includes('prime') || name.includes('amazon')) return 'Amazon Prime';
+  
+  // Disney+ variants
+  if (name.includes('disney')) return 'Disney+';
+  
+  // Apple TV+ variants
+  if (name.includes('apple tv')) return 'Apple TV+';
+  
+  // Max / HBO variants
+  if (name.includes('hbo') || name.includes('max')) return 'Max';
+  
+  // Paramount+ variants
+  if (name.includes('paramount')) return 'Paramount+';
+  
+  // Canal+ variants
+  if (name.includes('canal')) return 'Canal+';
+  
+  // Hulu variants
+  if (name.includes('hulu')) return 'Hulu';
+  
+  // Peacock variants
+  if (name.includes('peacock')) return 'Peacock';
+  
+  // Starz variants
+  if (name.includes('starz')) return 'Starz';
+  
+  // OCS variants
+  if (name.includes('ocs')) return 'OCS';
+  
+  // Return original if no match
+  return platformName;
+}
+
 // Sort availabilities with priority countries first (FR, BE, CH, LU, CA)
 function sortByPriorityCountries(availabilities) {
   return availabilities.sort((a, b) => {
@@ -215,7 +267,7 @@ function sortByPriorityCountries(availabilities) {
 }
 
 // ============================================
-// TMDB WATCH PROVIDERS (NEW!)
+// TMDB WATCH PROVIDERS
 // ============================================
 async function fetchTmdbWatchProviders(tmdbId, mediaType = 'movie') {
   try {
@@ -241,7 +293,7 @@ function processTmdbProviders(tmdbId, providersData, mediaType) {
     // Process flatrate (subscription)
     if (data.flatrate) {
       for (const provider of data.flatrate) {
-        const platformName = TMDB_PROVIDER_NAMES[provider.provider_id] || provider.provider_name;
+        const platformName = normalizePlatformName(TMDB_PROVIDER_NAMES[provider.provider_id] || provider.provider_name);
         
         availabilities.push({
           tmdb_id: tmdbId,
@@ -264,7 +316,7 @@ function processTmdbProviders(tmdbId, providersData, mediaType) {
     // Process rent
     if (data.rent) {
       for (const provider of data.rent) {
-        const platformName = TMDB_PROVIDER_NAMES[provider.provider_id] || provider.provider_name;
+        const platformName = normalizePlatformName(TMDB_PROVIDER_NAMES[provider.provider_id] || provider.provider_name);
         
         availabilities.push({
           tmdb_id: tmdbId,
@@ -287,7 +339,7 @@ function processTmdbProviders(tmdbId, providersData, mediaType) {
     // Process buy
     if (data.buy) {
       for (const provider of data.buy) {
-        const platformName = TMDB_PROVIDER_NAMES[provider.provider_id] || provider.provider_name;
+        const platformName = normalizePlatformName(TMDB_PROVIDER_NAMES[provider.provider_id] || provider.provider_name);
         
         availabilities.push({
           tmdb_id: tmdbId,
@@ -360,7 +412,7 @@ function processStreamingData(tmdbId, streamingData, mediaType) {
       if (!option || !option.service) continue;
 
       const platformKey = option.service.id;
-      let platformName = PLATFORMS[platformKey] || option.service.name || platformKey;
+      let platformName = normalizePlatformName(PLATFORMS[platformKey] || option.service.name || platformKey);
       
       const streamingType = option.type || 'subscription';
       const addonName = streamingType === 'addon' && option.addon?.name ? option.addon.name : null;
@@ -446,6 +498,31 @@ function processStreamingData(tmdbId, streamingData, mediaType) {
 // ============================================
 // MERGE AND CACHE AVAILABILITIES
 // ============================================
+
+/**
+ * Déduplique les plateformes (garde la meilleure entrée)
+ */
+function deduplicatePlatforms(availabilities) {
+  const seen = new Map();
+  
+  for (const avail of availabilities) {
+    // Clé unique : pays + plateforme + type + saison
+    const key = `${avail.country_code}-${avail.platform}-${avail.streaming_type}-${avail.season_number || 'null'}`;
+    
+    if (!seen.has(key)) {
+      seen.set(key, avail);
+    } else {
+      // Garde celui avec le meilleur lien
+      const existing = seen.get(key);
+      if (!existing.streaming_url && avail.streaming_url) {
+        seen.set(key, avail);
+      }
+    }
+  }
+  
+  return Array.from(seen.values());
+}
+
 async function fetchAndMergeAvailabilities(tmdbId, mediaType = 'movie') {
   // Fetch from both sources in parallel
   const [streamingData, tmdbProviders] = await Promise.all([
@@ -476,8 +553,11 @@ async function fetchAndMergeAvailabilities(tmdbId, mediaType = 'movie') {
     }
   }
   
-  const finalAvailabilities = Array.from(merged.values());
-  console.log(`✅ Final merged: ${finalAvailabilities.length} availabilities`);
+  const mergedAvailabilities = Array.from(merged.values());
+  
+  // Déduplique les plateformes
+  const finalAvailabilities = deduplicatePlatforms(mergedAvailabilities);
+  console.log(`✅ Final merged: ${finalAvailabilities.length} availabilities (after deduplication)`);
   
   return finalAvailabilities;
 }
