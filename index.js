@@ -17,6 +17,27 @@ const pool = new Pool({
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
+// ===========================================
+// 🆕 COMPTEUR API QUOTA
+// ===========================================
+let apiRequestCount = 0;
+let lastResetDate = new Date().toDateString();
+
+function checkAndResetCounter() {
+  const today = new Date().toDateString();
+  if (today !== lastResetDate) {
+    console.log('✅ Compteur API reset pour nouveau jour');
+    console.log(`Ancien: ${lastResetDate} (${apiRequestCount} requêtes)`);
+    console.log(`Nouveau: ${today} (0 requêtes)`);
+    apiRequestCount = 0;
+    lastResetDate = today;
+  }
+}
+
+// Vérifier le reset toutes les heures
+setInterval(checkAndResetCounter, 3600000);
+// ===========================================
+
 // Initialize database
 pool.query(`
   CREATE TABLE IF NOT EXISTS availabilities (
@@ -372,6 +393,11 @@ async function fetchStreamingAvailability(tmdbId, mediaType = 'movie', mediaDeta
     const endpoint = `/shows/${showType}/${tmdbId}`;
     
     console.log(`📡 Fetching ${mediaType} data: ${endpoint}`);
+    
+    // 🆕 INCRÉMENTER LE COMPTEUR ICI (requête API réelle)
+    checkAndResetCounter();
+    apiRequestCount++;
+    console.log(`📊 Requête API #${apiRequestCount}/100 - ${mediaType} ${tmdbId}`);
     
     const response = await streamingClient.get(endpoint, {
       params: {
@@ -865,6 +891,31 @@ app.get('/api/movie/:id/availability', async (req, res) => {
   return res.redirect(308, `/api/media/movie/${req.params.id}/availability`);
 });
 
+// ===========================================
+// 🆕 ENDPOINT STATS QUOTA (pour page admin)
+// ===========================================
+app.get('/api/stats/quota', (req, res) => {
+  checkAndResetCounter();
+  
+  const DAILY_LIMIT = 100;
+  const percentage = ((apiRequestCount / DAILY_LIMIT) * 100).toFixed(1);
+  
+  let status = 'ok';
+  if (apiRequestCount >= 90) status = 'critical';
+  else if (apiRequestCount >= 70) status = 'warning';
+  
+  res.json({
+    used: apiRequestCount,
+    remaining: DAILY_LIMIT - apiRequestCount,
+    limit: DAILY_LIMIT,
+    percentage: percentage,
+    status: status,
+    date: lastResetDate
+  });
+  
+  console.log(`📊 Stats API demandées - ${apiRequestCount}/${DAILY_LIMIT} (${percentage}%)`);
+});
+
 // ============================================
 // DEBUG ENDPOINTS
 // ============================================
@@ -1138,11 +1189,29 @@ app.get('/api/countries', async (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  checkAndResetCounter();
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    api_quota: {
+      used: apiRequestCount,
+      limit: 100,
+      date: lastResetDate
+    }
+  });
 });
 
 app.listen(PORT, () => {
+  console.log('');
+  console.log('🚀 ================================');
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log('🚀 ================================');
+  console.log('');
+  console.log('📊 Compteur API initialisé:');
+  console.log(`   Date: ${lastResetDate}`);
+  console.log(`   Requêtes: ${apiRequestCount}/100`);
+  console.log('');
   console.log(`📺 Sources: Streaming Availability API + TMDB Watch Providers`);
   console.log(`📊 Cache duration: ${CACHE_DURATION / (1000 * 60 * 60 * 24)} days`);
+  console.log('');
 });
